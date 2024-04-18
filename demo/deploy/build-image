@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import subprocess
+import sys
+
+DOCKER_BUILDER_NAME = "dk-builder"
+DOCKER_BUILDER_PLATFORMS = "linux/amd64,linux/arm64"
+
+
+class UserError(Exception):
+    pass
+
+
+def init_args():
+    parser = argparse.ArgumentParser(
+        description="Demo images builder script",
+        epilog=(
+            "When not using --push, builds the image locally, for testing purposes. "
+            "The image will be tagged as 'local'"
+        ),
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Builds the multi-platform images and pushes them to the 'datakitchen' registry",
+    )
+    return parser.parse_args()
+
+
+def build_image(args):
+    build_cmd_args = []
+    env = {}
+
+    if args.push:
+        git_tags = subprocess.run(("git", "tag"), stdout=subprocess.PIPE).stdout.decode().splitlines()
+        if len(git_tags) > 1:
+            raise UserError("More than one git tag found")
+        elif not git_tags:
+            raise UserError("Building the demo image requires the current")
+        env["DEMO_VERSION"] = f"v{git_tags[0]}"
+
+        build_cmd_args.append("--push")
+    else:
+        env["DEMO_VERSION"] = "local"
+        build_cmd_args.extend(("--load", "--set=*.platform="))
+
+    for try_create in (True, False):
+        if not subprocess.run(("docker", "buildx", "use", DOCKER_BUILDER_NAME), stdout=subprocess.PIPE).returncode == 0:
+            if try_create:
+                subprocess.run(
+                    (
+                        "docker",
+                        "buildx",
+                        "create",
+                        "--name",
+                        DOCKER_BUILDER_NAME,
+                        "--platform",
+                        DOCKER_BUILDER_PLATFORMS,
+                    )
+                )
+            else:
+                raise UserError(f"Could not use {DOCKER_BUILDER_NAME} docker builder")
+
+    ret = subprocess.run(
+        ("docker", "buildx", "bake", "-f", "deploy/docker-bake.json", "demo", *build_cmd_args),
+        env={**os.environ, **env},
+    )
+
+    if ret.returncode != 0:
+        raise UserError("Something went wrong")
+
+
+def main():
+    try:
+        build_image(init_args())
+    except UserError as e:
+        print(e.args[0])
+        sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(2)
+    else:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

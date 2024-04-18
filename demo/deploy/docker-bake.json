@@ -1,0 +1,16 @@
+{
+    "variable": {
+        "DEMO_VERSION": { }
+    },
+    "target": {
+        "demo": {
+            "dockerfile": "deploy/Dockerfile",
+            "tags": [
+                "datakitchen/data-observability-demo:${DEMO_VERSION}",
+                "datakitchen/data-observability-demo:latest"
+            ],
+            "context": ".",
+            "platforms": ["linux/amd64", "linux/arm64"]
+        }
+    }
+}

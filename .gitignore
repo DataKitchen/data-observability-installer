@@ -1,0 +1,20 @@
+# General OS/IDE
+.DS_Store
+.idea
+
+# Data
+.dk-installer
+demo-config.json
+dk-*-credentials.txt
+
+# Docker
+docker-compose.yml
+docker-compose.yaml
+
+# Logs
+testgen_demo.log
+
+# Local env
+.python-version
+venv
+*.pyc

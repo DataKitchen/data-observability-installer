@@ -1,0 +1,2 @@
+events-ingestion-client==1.4.0
+requests==2.31.0
