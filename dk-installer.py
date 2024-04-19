@@ -64,6 +64,8 @@ DEFAULT_EXPOSE_PORT = 8082
 BASE_API_URL_TPL = "{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
+TESTGEN_PULL_TIMEOUT = 120
+TESTGEN_PULL_RETRIES = 3
 
 LOG = logging.getLogger()
 
@@ -367,7 +369,7 @@ class Action:
                 "version": 1,
                 "formatters": {
                     "file": {"format": "%(asctime)s %(levelname)8s %(message)s"},
-                    "console": {"format": "     :  %(levelname)8s %(message)s"},
+                    "console": {"format": "   :  %(levelname)8s %(message)s"},
                 },
                 "handlers": {
                     "file": {
@@ -447,9 +449,17 @@ class Action:
         raise NotImplementedError
 
     def run_cmd(
-        self, *cmd, input=None, capture_json=False, capture_text=False, echo=False, raise_on_non_zero=True, env=None
+        self,
+        *cmd,
+        input=None,
+        capture_json=False,
+        capture_text=False,
+        echo=False,
+        raise_on_non_zero=True,
+        env=None,
+        **popen_args,
     ):
-        with self.start_cmd(*cmd, raise_on_non_zero=raise_on_non_zero, env=env) as (proc, stdout, stderr):
+        with self.start_cmd(*cmd, raise_on_non_zero=raise_on_non_zero, env=env, **popen_args) as (proc, stdout, stderr):
             if input:
                 proc.stdin.write(input)
             proc.stdin.close()
@@ -468,7 +478,7 @@ class Action:
                     return {}
 
     @contextlib.contextmanager
-    def start_cmd(self, *cmd, raise_on_non_zero=True, env=None):
+    def start_cmd(self, *cmd, raise_on_non_zero=True, env=None, **popen_args):
         started = time.time()
         self._cmd_idx += 1
 
@@ -479,7 +489,9 @@ class Action:
             env = {**os.environ, **env}
 
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE, env=env)
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE, env=env, **popen_args
+            )
         except FileNotFoundError as e:
             LOG.error("Command [%04d] failed to find the executable", self._cmd_idx)
             raise CommandFailed(self._cmd_idx, cmd, None) from e
@@ -1300,7 +1312,25 @@ class TestGenPullImagesStep(Step):
     label = "Pulling docker images"
 
     def execute(self, action, args):
-        action.run_cmd("docker", "compose", "pull", "--policy", "always")
+        remaining_attemps = TESTGEN_PULL_RETRIES
+        while True:
+            try:
+                with action.start_cmd("docker", "compose", "pull", "--policy", "always") as (proc, stdout, stderr):
+                    try:
+                        proc.wait(timeout=TESTGEN_PULL_TIMEOUT)
+                    except subprocess.TimeoutExpired:
+                        LOG.warning(
+                            "Timed out pulling TestGen's docker images. [%s] remaining attempts", remaining_attemps - 1
+                        )
+                        proc.kill()
+            except CommandFailed:
+                if not remaining_attemps:
+                    # Pulling the images before starting is not mandatory, so we just proceed if it fails
+                    raise SkipStep
+            else:
+                return
+            finally:
+                remaining_attemps -= 1
 
     def _collect_images_sha(self, action):
         images = action.run_cmd("docker", "compose", "images", "--format", "json", capture_json=True)
