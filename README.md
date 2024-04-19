@@ -155,7 +155,37 @@ python3 dk-installer.py tg delete
 ```
 
 ### Uninstall Observability
-
 ```shell
 python3 dk-installer.py obs delete
 ```
+
+## Community
+
+### Connect
+Talk and Learn with other data practitioners who are building with DataKitchen. Share knowledge, get help, and contribute to our open-source project. 
+
+Join our community here:
+
+* 🌟 [Star us on GitHub](https://github.com/DataKitchen/data-observability-installer)
+
+* 🐦 [Follow us on Twitter](https://twitter.com/i/flow/login?redirect_after_login=%2Fdatakitchen_io)
+
+* 🕴️ [Follow us on LinkedIn](https://www.linkedin.com/company/datakitchen)
+
+* 📺 [Get Free DataOps Fundamentals Certification](https://info.datakitchen.io/training-certification-dataops-fundamentals)
+
+* 📚 [Read our blog posts](https://datakitchen.io/blog/)
+
+* 👋 Join us on Slack
+
+* 🗃 [Sign The DataOps Manifesto](https://DataOpsManifesto.org)
+
+* 🗃 [Sign The Data Journey Manifesto](https://DataJourneyManifesto.org)
+
+
+### Contributing
+For details on contributing or running the project for development, check out our contributing guide.
+
+### License
+DataKitchen DataOps Observability is Apache 2.0 licensed.
+
