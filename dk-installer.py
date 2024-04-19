@@ -136,26 +136,6 @@ def get_testgen_status(action):
     return {}
 
 
-def get_latest_image_tag(repository, username, password, pin_pattern="vx.x", page_size=10):
-    token_response = do_request(  # TODO: remove after going making image repo public
-        "https://hub.docker.com/v2/users/login/",
-        method="POST",
-        data={"username": username, "password": password},
-        verify=False,
-    )
-    response = do_request(
-        f"https://hub.docker.com/v2/repositories/{repository}/tags/",
-        headers={"Authorization": f"Bearer {token_response['token']}"},
-        params={"page_size": page_size, "ordering": "last_updated"},
-        verify=False,
-    )
-
-    pin_pattern_re = re.compile(re.escape(pin_pattern).replace("x", "[0-9]+"))
-    for tag in response["results"]:
-        if pin_pattern_re.match(tag["name"]):
-            return tag["name"]
-
-
 def do_request(url, method="GET", headers=None, params=None, data=None, verify=True):
     query_params = ""
     if params:
@@ -713,64 +693,6 @@ class MinikubeProfileStep(Step):
         action.run_cmd("minikube", "profile", args.profile)
 
 
-class CreatePullSecretStep(Step):
-    label = "Creating the docker pull secret"
-
-    def execute(self, action, args):
-
-        if not "DOCKER_USERNAME" in os.environ or not "DOCKER_PASSWORD" in os.environ:
-            raise SkipStep
-
-        # The namespace has to exist
-        action.run_cmd(
-            "minikube",
-            f"--profile={args.profile}",
-            "kubectl",
-            "create",
-            "namespace",
-            args.namespace,
-        )
-        auth_value = base64.b64encode(
-            ":".join((os.environ["DOCKER_USERNAME"], os.environ["DOCKER_PASSWORD"])).encode()
-        ).decode()
-        auth_data = {
-            "auths": {
-                os.environ.get("DOCKER_REGISTRY", DEFAULT_DOCKER_REGISTRY): {
-                    "username": os.environ["DOCKER_USERNAME"],
-                    "password": os.environ["DOCKER_PASSWORD"],
-                    "auth": auth_value,
-                }
-            }
-        }
-
-        auth_data_str = base64.b64encode(json.dumps(auth_data).encode()).decode()
-
-        secret_data = {
-            "apiVersion": "v1",
-            "kind": "Secret",
-            "metadata": {
-                "name": "dk-dockerhub-secrets",
-                "namespace": args.namespace,
-            },
-            "data": {".dockerconfigjson": auth_data_str},
-            "type": "kubernetes.io/dockerconfigjson",
-        }
-
-        action.run_cmd(
-            "minikube",
-            "kubectl",
-            "--profile",
-            args.profile,
-            "--",
-            "--namespace",
-            args.namespace,
-            "create",
-            "-f",
-            "-",
-            input=json.dumps(secret_data).encode(),
-        )
-
-
 class SetupHelmReposStep(Step):
     label = "Setting up the helm repositories"
 
@@ -793,6 +715,7 @@ class HelmInstallStep(Step):
             release,
             chart_ref,
             f"--namespace={args.namespace}",
+            "--create-namespace",
             "--wait",
             f"--timeout={args.helm_timeout}m",
         )
@@ -984,7 +907,6 @@ class ObsGenerateDemoConfigStep(Step):
 class ObsInstallAction(MultiStepAction):
     steps = [
         MinikubeProfileStep(),
-        CreatePullSecretStep(),
         SetupHelmReposStep(),
         ObsHelmInstallServicesStep(),
         ObsHelmInstallPlatformStep(),
@@ -1189,7 +1111,7 @@ class TestGenCreateDockerComposeFileStep(Step):
     label = "Creating the docker-compose definition file"
 
     def __init__(self):
-        self.image_tag = None
+        self.image_tag = "v2.0"
         self.image_repo = "datakitchen/dataops-testgen"
         self.username = None
         self.password = None
@@ -1212,10 +1134,6 @@ class TestGenCreateDockerComposeFileStep(Step):
         if action.using_existing:
             LOG.info("Re-using existing [%s]", action.docker_compose_file)
         else:
-            self.image_tag = (
-                get_latest_image_tag(self.image_repo, os.environ["DOCKER_USERNAME"], os.environ["DOCKER_PASSWORD"])
-                or "latest"
-            )
             LOG.info("Creating [%s] for tag [%s]", action.docker_compose_file, self.image_tag)
             self.create_compose_file(
                 action.docker_compose_file,
