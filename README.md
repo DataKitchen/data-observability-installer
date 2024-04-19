@@ -179,7 +179,7 @@ Join our community here:
 
 * 📚 [Read our blog posts](https://datakitchen.io/blog/)
 
-* 👋 Join us on Slack
+* 👋 [Join us on Slack](https://data-observability.slack.com)
 
 * 🗃 [Sign The DataOps Manifesto](https://DataOpsManifesto.org)
 
