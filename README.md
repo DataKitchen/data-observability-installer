@@ -23,10 +23,10 @@ This repo contains the installer and quickstart setup for the DataKitchen Data O
 On Unix-based operating systems, use the following command to download it to the current directory. We recommend creating a new, empty directory.
 
 ```shell
-curl -o dk-installer.py 'https://raw.githubusercontent.com/DataKitchen/dk-installer/main/dk-installer.py'
+curl -o dk-installer.py 'https://raw.githubusercontent.com/DataKitchen/data-observability-installer/main/dk-installer.py'
 ```
 
-* Alternatively, you can manually download the [`dk-installer.py`](https://github.com/DataKitchen/dk-installer/blob/main/dk-installer.py) file from this repo.  
+* Alternatively, you can manually download the [`dk-installer.py`](https://github.com/DataKitchen/data-observability-installer/blob/main/dk-installer.py) file from this repo.
 * All commands listed below should be run from the folder containing this file.
 * For usage help and command options, run `python3 dk-installer.py --help` or `python3 dk-installer.py <command> --help`.
 
