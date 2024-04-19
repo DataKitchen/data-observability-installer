@@ -42,7 +42,7 @@ Until we make the images public, Docker credentials with access to the `datakitc
 
 ## Quickstart Guide
 
-The [Data Observability quickstart](https://docs.datakitchen.io/articles/#!open-source-data-observability/tutorial-part-0-overview-of-data-observability-quickstart-demo) walks you through Dataops Observability and TestGen capabilities to demonstrate how our products cover critical use cases for data and analytic teams.
+The [Data Observability quickstart](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview) walks you through Dataops Observability and TestGen capabilities to demonstrate how our products cover critical use cases for data and analytic teams.
 
 Before going through the quickstart, complete the prequisites above and then the following steps to install the two products and setup the demo data. For any of the commands, you can view additional options by appending `--help` at the end.
 
@@ -96,7 +96,7 @@ python3 dk-installer.py obs run-heartbeat-demo
 ```
 In the Observability UI, you will see that new agents have been generated on the Integrations page.
 
-Leave this process running, and continue with the [quickstart guide](https://docs.datakitchen.io/articles/#!open-source-data-observability/tutorial-part-0-overview-of-data-observability-quickstart-demo) to tour the applications.
+Leave this process running, and continue with the [quickstart guide](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview) to tour the applications.
 
 ## Product Documentation
 
@@ -162,7 +162,7 @@ python3 dk-installer.py obs delete
 ## Community
 
 ### Getting Started Guide
-We recommend you start by going through the [Data Observability Overview Demo](https://docs.datakitchen.io/articles/#!open-source-data-observability/data-observability-overview).
+We recommend you start by going through the [Data Observability Overview Demo](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview).
 
 ### Connect
 Talk and Learn with other data practitioners who are building with DataKitchen. Share knowledge, get help, and contribute to our open-source project. 
@@ -187,8 +187,7 @@ Join our community here:
 
 
 ### Contributing
-For details on contributing or running the project for development, check out our contributing guide.
+For details on contributing or running the project for development, check out our contributing guide (coming soon!).
 
 ### License
 DataKitchen DataOps Observability is Apache 2.0 licensed.
-
