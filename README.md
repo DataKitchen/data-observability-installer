@@ -178,10 +178,15 @@ python3 dk-installer.py obs delete
 **Push**: Development Unit, Regression Tests, and Impact Assessment.|During The Development Process|Find problems in data or tools in development to validate code/configuration changes.|The combination of DataOps Observability and DataOps TestGen can be run in your development environment against test data to provide functional, unit, and regression tests.|Improve the speed and lower the risk of changes to production, less wasted time, improve productivity
 **Parallel**: Checking data accuracy during Data Migration projects: "Does It Match'?|During a Data Migration Process|Checking two data similar data sets or processes so they produce the same results.|DataOps TestGen can find errors between migrated data sets by comparing source and target data quality tests. DataOps Observability can monitor legacy tools and migrated cloud tools at the same time.|Lower risk of data errors, improve project delivery time
 
+
+
 ## Community
 
 ### Getting Started Guide
 We recommend you start by going through the [Data Observability Overview Demo](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview).
+
+### Support
+For support requests, [join the Data Observability Slack](https://data-observability.slack.com) and ask post on #support channel.
 
 ### Connect
 Talk and Learn with other data practitioners who are building with DataKitchen. Share knowledge, get help, and contribute to our open-source project. 
