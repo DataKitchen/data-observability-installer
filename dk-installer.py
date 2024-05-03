@@ -992,6 +992,9 @@ class ObsExposeAction(Action):
                     CONSOLE.msg("Keep this process running while using the above URLs")
                     CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
                 else:
+                    for output in stderr:
+                        if output:
+                            CONSOLE.msg(output.decode().strip())
                     raise CommandFailed
 
                 try:
@@ -1008,9 +1011,14 @@ class ObsExposeAction(Action):
 
         except Exception:
             LOG.exception("Something went wrong exposing the services ports")
+            CONSOLE.space()
             CONSOLE.msg("The platform could not have its ports exposed.")
             CONSOLE.msg(
-                f"Verify if the platform is running and installer has permission to listen at the port {args.port}"
+                f"Verify if the platform is running and installer has permission to listen at the port {args.port}."
+            )
+            CONSOLE.space()
+            CONSOLE.msg(
+                f"If port {args.port} is in use, use the command option --port to specify an alternate value."
             )
             raise AbortAction
 
