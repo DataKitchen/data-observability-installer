@@ -991,6 +991,16 @@ class ObsExposeAction(Action):
                     CONSOLE.space()
                     CONSOLE.msg("Keep this process running while using the above URLs")
                     CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
+
+                    try:
+                        with open(DEMO_CONFIG_FILE, "r") as file:
+                            json_config = json.load(file)
+                            json_config["api_host"] = BASE_API_URL_TPL.format(f"http://host.docker.internal:{args.port}")
+
+                        with open(DEMO_CONFIG_FILE, "w") as file:
+                            file.write(json.dumps(json_config))
+                    except Exception:
+                        LOG.exception("Unable to update demo-config.json file with exposed port")
                 else:
                     for output in stderr:
                         if output:
