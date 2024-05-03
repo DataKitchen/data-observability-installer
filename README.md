@@ -40,16 +40,6 @@ curl -o dk-installer.py 'https://raw.githubusercontent.com/DataKitchen/data-obse
 * All commands listed below should be run from the folder containing this file.
 * For usage help and command options, run `python3 dk-installer.py --help` or `python3 dk-installer.py <command> --help`.
 
-### Temporary Prerequisites
-
-Until we make the images public, Docker credentials with access to the `datakitchen` namespace have to be configured on your machine.
-
-* Ask the development team for credentials.
-* On Docker Desktop, login with the credentials.
-* On the terminal, set these environment variables.
-  * `export DOCKER_USERNAME=<username>`
-  * `export DOCKER_PASSWORD=<password>`
-
 ## Quickstart Guide
 
 The [Data Observability quickstart](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview) walks you through Dataops Observability and TestGen capabilities to demonstrate how our products cover critical use cases for data and analytic teams.
