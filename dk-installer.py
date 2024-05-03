@@ -925,6 +925,12 @@ class ObsInstallAction(MultiStepAction):
     def __init__(self):
         self.ctx = {}
 
+    def execute_with_log(self, args):
+        if args.driver == 'docker':
+            self.requirements.append(REQ_DOCKER_DAEMON)
+
+        return super().execute_with_log(args)
+
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
         parser.add_argument(
