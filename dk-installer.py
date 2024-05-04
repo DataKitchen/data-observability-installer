@@ -925,6 +925,12 @@ class ObsInstallAction(MultiStepAction):
     def __init__(self):
         self.ctx = {}
 
+    def execute_with_log(self, args):
+        if args.driver == 'docker':
+            self.requirements.append(REQ_DOCKER_DAEMON)
+
+        return super().execute_with_log(args)
+
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
         parser.add_argument(
@@ -991,7 +997,20 @@ class ObsExposeAction(Action):
                     CONSOLE.space()
                     CONSOLE.msg("Keep this process running while using the above URLs")
                     CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
+
+                    try:
+                        with open(DEMO_CONFIG_FILE, "r") as file:
+                            json_config = json.load(file)
+                            json_config["api_host"] = BASE_API_URL_TPL.format(f"http://host.docker.internal:{args.port}")
+
+                        with open(DEMO_CONFIG_FILE, "w") as file:
+                            file.write(json.dumps(json_config))
+                    except Exception:
+                        LOG.exception("Unable to update demo-config.json file with exposed port")
                 else:
+                    for output in stderr:
+                        if output:
+                            CONSOLE.msg(output.decode().strip())
                     raise CommandFailed
 
                 try:
@@ -1008,9 +1027,14 @@ class ObsExposeAction(Action):
 
         except Exception:
             LOG.exception("Something went wrong exposing the services ports")
+            CONSOLE.space()
             CONSOLE.msg("The platform could not have its ports exposed.")
             CONSOLE.msg(
-                f"Verify if the platform is running and installer has permission to listen at the port {args.port}"
+                f"Verify if the platform is running and installer has permission to listen at the port {args.port}."
+            )
+            CONSOLE.space()
+            CONSOLE.msg(
+                f"If port {args.port} is in use, use the command option --port to specify an alternate value."
             )
             raise AbortAction
 
