@@ -981,6 +981,8 @@ class ObsExposeAction(Action):
                 "--",
                 "--namespace",
                 args.namespace,
+                "--address",
+                "0.0.0.0",
                 "port-forward",
                 "service/observability-ui",
                 f"{args.port}:http",
@@ -991,10 +993,11 @@ class ObsExposeAction(Action):
                         break
 
                 if proc.poll() is None:
-                    url = f"http://127.0.0.1:{args.port}"
+                    url = f"http://localhost:{args.port}"
                     for service, label in SERVICES_LABELS.items():
                         CONSOLE.msg(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
                     CONSOLE.space()
+                    CONSOLE.msg("Listening on all interfaces (0.0.0.0)")
                     CONSOLE.msg("Keep this process running while using the above URLs")
                     CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
 

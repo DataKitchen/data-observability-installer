@@ -61,8 +61,11 @@ The installation downloads the latest Helm charts and Docker images for Observab
 ```shell
 python3 dk-installer.py obs install
 ```
+#### Bind HTTP ports to host machine
 
-For *Windows* and *macOS running M-series (ARM) chip* only: The Docker driver is not allowed to expose the HTTP ports to the host machine, so the following command has to be run after the install to access the application. Leave this process running, and continue the next steps on another terminal window.
+This step is required to access the application when using Docker driver on Mac or Windows. It may also be useful for installations on remote machines to access the UI from a local browser.
+
+Leave this process running, and continue the next steps on another terminal window.
 
 ```shell
 python3 dk-installer.py obs expose
