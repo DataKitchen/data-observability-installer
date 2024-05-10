@@ -61,6 +61,7 @@ SERVICES_URLS = {
     "agent-api": "{}/api/agent/v1",
 }
 DEFAULT_EXPOSE_PORT = 8082
+DEFAULT_OBS_MEMORY = 4096
 BASE_API_URL_TPL = "{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
@@ -673,6 +674,7 @@ class MinikubeProfileStep(Step):
         action.run_cmd(
             "minikube",
             f"start",
+            f"--memory={args.memory}",
             f"--profile={args.profile}",
             f"--namespace={args.namespace}",
             f"--driver={args.driver}",
@@ -933,6 +935,13 @@ class ObsInstallAction(MultiStepAction):
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
+        parser.add_argument(
+            "--memory",
+            type=str,
+            action="store",
+            default=DEFAULT_OBS_MEMORY,
+            help="Memory to be used for minikube cluster. Defaults to '%(default)s'",
+        )
         parser.add_argument(
             "--driver",
             type=str,
