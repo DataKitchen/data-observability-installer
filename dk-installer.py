@@ -61,6 +61,7 @@ SERVICES_URLS = {
     "agent-api": "{}/api/agent/v1",
 }
 DEFAULT_EXPOSE_PORT = 8082
+DEFAULT_OBS_MEMORY = 4096
 BASE_API_URL_TPL = "{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
@@ -673,6 +674,7 @@ class MinikubeProfileStep(Step):
         action.run_cmd(
             "minikube",
             f"start",
+            f"--memory={args.memory}",
             f"--profile={args.profile}",
             f"--namespace={args.namespace}",
             f"--driver={args.driver}",
@@ -934,6 +936,13 @@ class ObsInstallAction(MultiStepAction):
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
         parser.add_argument(
+            "--memory",
+            type=str,
+            action="store",
+            default=DEFAULT_OBS_MEMORY,
+            help="Memory to be used for minikube cluster. Defaults to '%(default)s'",
+        )
+        parser.add_argument(
             "--driver",
             type=str,
             action="store",
@@ -981,6 +990,8 @@ class ObsExposeAction(Action):
                 "--",
                 "--namespace",
                 args.namespace,
+                "--address",
+                "0.0.0.0",
                 "port-forward",
                 "service/observability-ui",
                 f"{args.port}:http",
@@ -991,10 +1002,11 @@ class ObsExposeAction(Action):
                         break
 
                 if proc.poll() is None:
-                    url = f"http://127.0.0.1:{args.port}"
+                    url = f"http://localhost:{args.port}"
                     for service, label in SERVICES_LABELS.items():
                         CONSOLE.msg(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
                     CONSOLE.space()
+                    CONSOLE.msg("Listening on all interfaces (0.0.0.0)")
                     CONSOLE.msg("Keep this process running while using the above URLs")
                     CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
 

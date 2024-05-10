@@ -16,17 +16,23 @@ For background on why we build this product check out the articles on ['why we o
 
 ## Prerequisites
 
+### Minimum system requirements
+
+- 2 CPUs
+- 8 GB memory
+- 20 GB disk space
+
 ### Install the required software
 
 | Software                | Tested Versions               | Command to check version                |
 |-------------------------|-------------------------|-------------------------------|
 | **Requirements for TestGen & Observability**
 | [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12                | `python3 --version`                |
-| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/) (pre-installed with Docker Desktop)           | 25.0.3 <br/> 2.24.6        | `docker -v` <br/> `docker compose version`         |
+| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 25.0.3, 26.1.1 <br/> 2.24.6, 2.27.0        | `docker -v` <br/> `docker compose version`         |
 |  **Additional Requirements for Observability** |
-| [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.32.0                | `minikube version`                |
+| [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.32.0, 1.33.0                | `minikube version`                |
 | [Helm](https://helm.sh/docs/intro/install/)            | 3.13.3, 3.14.3        | `helm version`         |
-| Minikube Driver <br/>- macOS on Intel chip: [HyperKit](https://minikube.sigs.k8s.io/docs/drivers/hyperkit/) <br/>- Other operating systems: [Docker](https://minikube.sigs.k8s.io/docs/drivers/docker/) | <br/>0.20210107 <br/> 25.0.3             | <br/>`hyperkit -v` <br/>`docker -v`         |
+| Minikube Driver <br/>- macOS on Intel chip: [HyperKit](https://minikube.sigs.k8s.io/docs/drivers/hyperkit/) <br/>- Other operating systems: [Docker](https://minikube.sigs.k8s.io/docs/drivers/docker/) | <br/>0.20210107 <br/> 25.0.3, 26.1.1             | <br/>`hyperkit -v` <br/>`docker -v`         |
 
 ### Download the installer
 
@@ -61,8 +67,11 @@ The installation downloads the latest Helm charts and Docker images for Observab
 ```shell
 python3 dk-installer.py obs install
 ```
+#### Bind HTTP ports to host machine
 
-For *Windows* and *macOS running M-series (ARM) chip* only: The Docker driver is not allowed to expose the HTTP ports to the host machine, so the following command has to be run after the install to access the application. Leave this process running, and continue the next steps on another terminal window.
+This step is required to access the application when using Docker driver on Mac or Windows. It may also be useful for installations on remote machines to access the UI from a local browser.
+
+Leave this process running, and continue the next steps on another terminal window.
 
 ```shell
 python3 dk-installer.py obs expose
