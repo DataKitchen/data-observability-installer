@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import base64
 import contextlib
 import dataclasses
 import datetime
@@ -127,6 +126,11 @@ def write_credentials_file(product, lines):
         pass
     else:
         CONSOLE.msg(f"(Credentials also written to {file_name} file)")
+
+
+def delete_file(filename):
+    LOG.debug("Deleting [%s]", filename)
+    (pathlib.Path() / filename).unlink(missing_ok=True)
 
 
 def get_testgen_status(action):
@@ -1018,7 +1022,7 @@ class ObsExposeAction(Action):
                         with open(DEMO_CONFIG_FILE, "w") as file:
                             file.write(json.dumps(json_config))
                     except Exception:
-                        LOG.exception("Unable to update demo-config.json file with exposed port")
+                        LOG.exception(f"Unable to update {DEMO_CONFIG_FILE} file with exposed port")
                 else:
                     for output in stderr:
                         if output:
@@ -1064,6 +1068,8 @@ class ObsDeleteAction(Action):
             LOG.exception("Error deleting minikube profile")
             CONSOLE.msg("Could NOT delete the minikube profile")
         else:
+            delete_file(DEMO_CONFIG_FILE)
+            delete_file(CREDENTIALS_FILE.format(args.prod))
             CONSOLE.msg("Minikube profile deleted")
 
 
@@ -1202,8 +1208,7 @@ class TestGenCreateDockerComposeFileStep(Step):
     def on_action_fail(self, action, args):
         # We keep the file around for inspection when in debug mode
         if not args.debug and not action.using_existing:
-            LOG.debug("Deleting [%s]", action.docker_compose_file)
-            action.docker_compose_file.unlink(missing_ok=True)
+            delete_file(action.docker_compose_file)
 
     def get_credentials_from_compose_file(self, file_contents):
         username = None
@@ -1386,17 +1391,24 @@ class TestgenDeleteAction(Action):
 
     def execute(self, args):
         CONSOLE.title("Delete TestGen instance")
-        self.run_cmd(
-            "docker",
-            "compose",
-            "down",
-            *([] if args.keep_images else ["--rmi", "all"]),
-            "--volumes",
-            echo=True,
-        )
-        if not args.keep_config:
-            LOG.debug("Deleting [%s]", DOCKER_COMPOSE_FILE)
-            (pathlib.Path() / DOCKER_COMPOSE_FILE).unlink(missing_ok=True)
+        try:
+            self.run_cmd(
+                "docker",
+                "compose",
+                "down",
+                *([] if args.keep_images else ["--rmi", "all"]),
+                "--volumes",
+                echo=True,
+            )
+        except CommandFailed:
+            LOG.exception("Error deleting Docker resources")
+            CONSOLE.msg("Could NOT delete the Docker resources")
+        else:
+            if not args.keep_config:
+                delete_file(DOCKER_COMPOSE_FILE)
+
+            delete_file(CREDENTIALS_FILE.format(args.prod))
+            CONSOLE.msg("Docker resources deleted")
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
