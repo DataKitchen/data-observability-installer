@@ -1153,7 +1153,7 @@ class TestGenCreateDockerComposeFileStep(Step):
     label = "Creating the docker-compose definition file"
 
     def __init__(self):
-        self.image_tag = "v2.0"
+        self.image_tag = "v2"
         self.image_repo = "datakitchen/dataops-testgen"
         self.username = None
         self.password = None
