@@ -125,6 +125,8 @@ Stop the app: `docker compose down`
 
 Restart the app: `docker compose up`
 
+Upgrade the app to latest version: `python3 dk-installer.py tg upgrade`
+
 ### DataOps Observability
 
 The [minikube](https://minikube.sigs.k8s.io/docs/commands/) and [kubectl](https://kubernetes.io/docs/reference/kubectl/) command line tools can be used to operate the Observability application.
@@ -167,6 +169,7 @@ python3 dk-installer.py tg delete
 ```shell
 python3 dk-installer.py obs delete
 ```
+
 ## Use Cases for Data Observability
 
 **Data Analytics Use Case**|**When Does it Happen**|**Data Observability Challenge**|**Key Data Observability Product Feature**|**Key Benefit**

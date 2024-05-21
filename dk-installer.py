@@ -1148,6 +1148,37 @@ class TestGenVerifyExistingInstallStep(Step):
             raise AbortAction
 
 
+class TestGenVerifyVersionStep(Step):
+    label = "Checking current and latest versions"
+
+    def pre_execute(self, action, args):
+        try:
+            output = action.run_cmd(
+                "docker",
+                "compose",
+                "exec",
+                "engine",
+                "testgen",
+                "--help",
+                capture_text=True,
+            )
+            match = re.search('This version:(.*)\\s+Latest version:(.*)\\s', output)
+            current_version = match.group(1)
+            latest_version = match.group(2)
+        except Exception:
+            CONSOLE.msg(f"Current version: unknown")
+            CONSOLE.msg(f"Latest version: unknown")
+            pass
+        else:
+            CONSOLE.msg(f"Current version: {current_version}")
+            CONSOLE.msg(f"Latest version: {latest_version}")
+            
+            if current_version == latest_version:
+                CONSOLE.space()
+                CONSOLE.msg("Application is already up-to-date.")
+                raise AbortAction
+
+
 class TestGenCreateDockerComposeFileStep(Step):
 
     label = "Creating the docker-compose definition file"
@@ -1315,7 +1346,19 @@ class TestGenStartStep(Step):
         )
 
     def on_action_fail(self, action, args):
-        action.run_cmd("docker", "compose", "down", "--volumes")
+        if action.args_cmd == 'install':
+            action.run_cmd("docker", "compose", "down", "--volumes")
+
+
+class TestGenStopStep(Step):
+    label = "Stopping docker compose application"
+
+    def execute(self, action, args):
+        action.run_cmd(
+            "docker",
+            "compose",
+            "down",
+        )
 
 
 class TestGenSetupDatabaseStep(Step):
@@ -1335,10 +1378,12 @@ class TestGenSetupDatabaseStep(Step):
 
 class TestGenUpgradeDatabaseStep(Step):
     label = "Upgrading the platform database"
-    required = False
+
+    def pre_execute(self, action, args):
+        self.required = action.args_cmd == 'upgrade'
 
     def execute(self, action, args):
-        if action.using_existing:
+        if action.args_cmd == 'install' and action.using_existing:
             raise SkipStep
         else:
             action.run_cmd(
@@ -1349,6 +1394,20 @@ class TestGenUpgradeDatabaseStep(Step):
                 "testgen",
                 "upgrade-system-version",
             )
+
+    def on_action_success(self, action, args):
+        output = action.run_cmd(
+            "docker",
+            "compose",
+            "exec",
+            "engine",
+            "testgen",
+            "--help",
+            capture_text=True,
+        )
+        match = re.search('This version:(.*)', output)
+        CONSOLE.msg(f"Application version: {match.group(1)}")
+        CONSOLE.space()
 
 
 class TestgenInstallAction(MultiStepAction):
@@ -1366,7 +1425,6 @@ class TestgenInstallAction(MultiStepAction):
     intro_text = "This process may take 5~10 minutes depending on your system resources and network speed."
 
     args_cmd = "install"
-    args_parser_parents = [minikube_parser]
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
 
     def __init__(self):
@@ -1383,6 +1441,26 @@ class TestgenInstallAction(MultiStepAction):
             help="Which port will be used to access Testgen UI. Defaults to %(default)s",
         )
         return parser
+
+
+class TestgenUpgradeAction(MultiStepAction):
+    steps = [
+        TestGenVerifyVersionStep(),
+        TestGenStopStep(),
+        TestGenPullImagesStep(),
+        TestGenStartStep(),
+        TestGenUpgradeDatabaseStep(),
+    ]
+
+    label = "Upgrade"
+    title = "Upgrade TestGen"
+    intro_text = "This process may take 5~10 minutes depending on your system resources and network speed."
+
+    args_cmd = "upgrade"
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+
+    def __init__(self):
+        self.docker_compose_file = pathlib.Path() / DOCKER_COMPOSE_FILE
 
 
 class TestgenDeleteAction(Action):
@@ -1576,6 +1654,7 @@ if __name__ == "__main__":
         "tg",
         [
             TestgenInstallAction(),
+            TestgenUpgradeAction(),
             TestgenDeleteAction(),
             TestgenRunDemoAction(),
             TestgenDeleteDemoAction(),
