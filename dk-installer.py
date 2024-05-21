@@ -64,6 +64,7 @@ DEFAULT_OBS_MEMORY = 4096
 BASE_API_URL_TPL = "{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
+TESTGEN_IMAGE_TAG = "v2"
 TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
 
@@ -641,6 +642,7 @@ REQ_MINIKUBE = Requirement("minikube", ("minikube", "version"))
 REQ_MINIKUBE_DRIVER = Requirement("minikube driver", ("{driver}", "-v"))
 REQ_DOCKER = Requirement("Docker", ("docker", "-v"))
 REQ_DOCKER_DAEMON = Requirement("Docker daemon process", ("docker", "info"))
+REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "compose", "config"))
 
 #
 # Action and Steps implementations
@@ -1149,7 +1151,7 @@ class TestGenVerifyExistingInstallStep(Step):
 
 
 class TestGenVerifyVersionStep(Step):
-    label = "Checking current and latest versions"
+    label = "Verifying latest version"
 
     def pre_execute(self, action, args):
         try:
@@ -1177,6 +1179,11 @@ class TestGenVerifyVersionStep(Step):
                 CONSOLE.space()
                 CONSOLE.msg("Application is already up-to-date.")
                 raise AbortAction
+            
+    def execute(self, action, args):
+        contents = action.docker_compose_file.read_text()
+        new_contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_IMAGE_TAG}\n", contents)
+        action.docker_compose_file.write_text(new_contents)       
 
 
 class TestGenCreateDockerComposeFileStep(Step):
@@ -1184,7 +1191,7 @@ class TestGenCreateDockerComposeFileStep(Step):
     label = "Creating the docker-compose definition file"
 
     def __init__(self):
-        self.image_tag = "v2"
+        self.image_tag = TESTGEN_IMAGE_TAG
         self.image_repo = "datakitchen/dataops-testgen"
         self.username = None
         self.password = None
@@ -1268,7 +1275,7 @@ class TestGenCreateDockerComposeFileStep(Step):
               TG_METADATA_DB_HOST: postgres
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
-              TG_DOCKER_RELEASE_CHECK_ENABLED: no
+              TG_DOCKER_RELEASE_CHECK_ENABLED: yes
 
             services:
               engine:
@@ -1457,7 +1464,7 @@ class TestgenUpgradeAction(MultiStepAction):
     intro_text = "This process may take 5~10 minutes depending on your system resources and network speed."
 
     args_cmd = "upgrade"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_CONFIG]
 
     def __init__(self):
         self.docker_compose_file = pathlib.Path() / DOCKER_COMPOSE_FILE
@@ -1465,7 +1472,7 @@ class TestgenUpgradeAction(MultiStepAction):
 
 class TestgenDeleteAction(Action):
     args_cmd = "delete"
-    requirements = [REQ_DOCKER]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_CONFIG]
 
     def execute(self, args):
         CONSOLE.title("Delete TestGen instance")
