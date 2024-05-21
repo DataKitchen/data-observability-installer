@@ -932,7 +932,7 @@ class ObsInstallAction(MultiStepAction):
         self.ctx = {}
 
     def execute_with_log(self, args):
-        if args.driver == 'docker':
+        if args.driver == "docker":
             self.requirements.append(REQ_DOCKER_DAEMON)
 
         return super().execute_with_log(args)
@@ -1162,7 +1162,7 @@ class TestGenVerifyVersionStep(Step):
                 "--help",
                 capture_text=True,
             )
-            match = re.search('This version:(.*)\\s+Latest version:(.*)\\s', output)
+            match = re.search(r"This version:(.*)\s+Latest version:(.*)\s", output)
             current_version = match.group(1)
             latest_version = match.group(2)
         except Exception:
@@ -1346,7 +1346,7 @@ class TestGenStartStep(Step):
         )
 
     def on_action_fail(self, action, args):
-        if action.args_cmd == 'install':
+        if action.args_cmd == "install":
             action.run_cmd("docker", "compose", "down", "--volumes")
 
 
@@ -1380,10 +1380,10 @@ class TestGenUpgradeDatabaseStep(Step):
     label = "Upgrading the platform database"
 
     def pre_execute(self, action, args):
-        self.required = action.args_cmd == 'upgrade'
+        self.required = action.args_cmd == "upgrade"
 
     def execute(self, action, args):
-        if action.args_cmd == 'install' and action.using_existing:
+        if action.args_cmd == "install" and action.using_existing:
             raise SkipStep
         else:
             action.run_cmd(
@@ -1405,7 +1405,7 @@ class TestGenUpgradeDatabaseStep(Step):
             "--help",
             capture_text=True,
         )
-        match = re.search('This version:(.*)', output)
+        match = re.search("This version:(.*)", output)
         CONSOLE.msg(f"Application version: {match.group(1)}")
         CONSOLE.space()
 
