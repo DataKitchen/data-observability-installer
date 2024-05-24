@@ -2,7 +2,7 @@
 ![apache 2.0 license Badge](https://img.shields.io/badge/License%20-%20Apache%202.0%20-%20blue) 
 ![PRs Badge](https://img.shields.io/badge/PRs%20-%20Welcome%20-%20green) 
 [![Documentation](https://img.shields.io/badge/docs-On%20datakitchen.io-06A04A?style=flat)](https://docs.datakitchen.io/articles/#!open-source-data-observability/data-observability-overview) 
-[![Static Badge](https://img.shields.io/badge/Slack-Join%20Discussion-blue?style=flat&logo=slack)](https://data-observability.slack.com)
+[![Static Badge](https://img.shields.io/badge/Slack-Join%20Discussion-blue?style=flat&logo=slack)](https://data-observability-slack.datakitchen.io/join)
 
 *<p style="text-align: center;">Data breaks. Servers break. Your toolchain breaks. Ensure your data team is the first to know and the first to solve with visibility across and down your data estate. Save time with simple, fast data quality test generation and execution. Trust your data, tools, and systems end to end.</p>*
 
@@ -188,7 +188,7 @@ python3 dk-installer.py obs delete
 We recommend you start by going through the [Data Observability Overview Demo](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview).
 
 ### Support
-For support requests, [join the Data Observability Slack](https://data-observability.slack.com) and ask post on #support channel.
+For support requests, [join the Data Observability Slack](https://data-observability-slack.datakitchen.io/join) and ask post on #support channel.
 
 ### Connect
 Talk and Learn with other data practitioners who are building with DataKitchen. Share knowledge, get help, and contribute to our open-source project. 
@@ -205,7 +205,7 @@ Join our community here:
 
 * 📚 [Read our blog posts](https://datakitchen.io/blog/)
 
-* 👋 [Join us on Slack](https://data-observability.slack.com)
+* 👋 [Join us on Slack](https://data-observability-slack.datakitchen.io/join)
 
 * 🗃 [Sign The DataOps Manifesto](https://DataOpsManifesto.org)
 

@@ -12,7 +12,7 @@ You can submit a proposal for a new feature by creating a [GitHub Issue](https:/
 
 ## Join our Community
 
-Join our [Slack community](https://data-observability.slack.com) for discussions with other Data Observability users.
+Join our [Slack community](https://data-observability-slack.datakitchen.io/join) for discussions with other Data Observability users.
 
 ## Code Submission
 

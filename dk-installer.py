@@ -393,7 +393,7 @@ class Action:
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         CONSOLE.msg(
             f"An unexpected error has happened. For assistance, please reach out to "
-            f"the #support channel on https://data-observability.slack.com, attaching {msg_file_path}"
+            f"the #support channel on https://data-observability-slack.datakitchen.io/join, attaching {msg_file_path}"
         )
 
     def execute_with_log(self, args):
