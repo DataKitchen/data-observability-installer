@@ -803,10 +803,10 @@ class ObsHelmInstallPlatformStep(HelmInstallStep):
                     "json",
                     capture_json=True,
                 )
-            except CommandFailed:
+                url = [svc["URLs"][0] for svc in data if svc["Name"] == "observability-ui"][0]
+            except Exception:
                 pass
             else:
-                url = [svc["URLs"][0] for svc in data if svc["Name"] == "observability-ui"][0]
                 action.ctx["base_url"] = url
 
     def on_action_success(self, action, args):
