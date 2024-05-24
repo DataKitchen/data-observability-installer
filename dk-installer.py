@@ -399,7 +399,16 @@ class Action:
     def execute_with_log(self, args):
         with self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"), self.configure_logging(debug=args.debug):
             # Collecting basic system information for troubleshooting
-            LOG.info("System info: %s", platform.version())
+            LOG.info(
+                "System info: %s | %s",
+                platform.system(),
+                platform.version(),
+            )
+            LOG.info(
+                "Platform info: %s | %s",
+                platform.platform(),
+                platform.processor(),
+            )
             LOG.info(
                 "Python info: %s %s",
                 platform.python_implementation(),
@@ -803,10 +812,10 @@ class ObsHelmInstallPlatformStep(HelmInstallStep):
                     "json",
                     capture_json=True,
                 )
-            except CommandFailed:
+                url = [svc["URLs"][0] for svc in data if svc["Name"] == "observability-ui"][0]
+            except Exception:
                 pass
             else:
-                url = [svc["URLs"][0] for svc in data if svc["Name"] == "observability-ui"][0]
                 action.ctx["base_url"] = url
 
     def on_action_success(self, action, args):
