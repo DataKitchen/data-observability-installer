@@ -1273,7 +1273,6 @@ class TestGenCreateDockerComposeFileStep(Step):
         file.write_text(
             textwrap.dedent(
                 f"""
-            version: "3.8"
             name: testgen
 
             x-common-variables: &common-variables
@@ -1306,6 +1305,11 @@ class TestGenCreateDockerComposeFileStep(Step):
                   - POSTGRES_PASSWORD={password}
                 volumes:
                   - postgres_data:/var/lib/postgresql/data
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U postgres"]
+                  interval: 8s
+                  timeout: 5s
+                  retries: 3
 
             volumes:
               postgres_data:
