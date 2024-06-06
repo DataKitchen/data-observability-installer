@@ -24,12 +24,17 @@ For background on why we build this product check out the articles on ['why we o
 
 ### Install the required software
 
+#### Requirements for TestGen & Observability
+
 | Software                | Tested Versions               | Command to check version                |
 |-------------------------|-------------------------|-------------------------------|
-| **Requirements for TestGen & Observability**
 | [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12                | `python3 --version`                |
 | [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 25.0.3, 26.1.1 <br/> 2.24.6, 2.27.0        | `docker -v` <br/> `docker compose version`         |
-|  **Additional Requirements for Observability** |
+
+#### Additional Requirements for Observability only
+
+| Software                | Tested Versions               | Command to check version                |
+|-------------------------|-------------------------|-------------------------------|
 | [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.32.0, 1.33.0                | `minikube version`                |
 | [Helm](https://helm.sh/docs/intro/install/)            | 3.13.3, 3.14.3        | `helm version`         |
 | Minikube Driver <br/>- macOS on Intel chip: [HyperKit](https://minikube.sigs.k8s.io/docs/drivers/hyperkit/) <br/>- Other operating systems: [Docker](https://minikube.sigs.k8s.io/docs/drivers/docker/) | <br/>0.20210107 <br/> 25.0.3, 26.1.1             | <br/>`hyperkit -v` <br/>`docker -v`         |
@@ -54,12 +59,14 @@ Before going through the quickstart, complete the prequisites above and then the
 
 ### Install the TestGen application
 
-The installation downloads the latest Docker images for TestGen and deploys a new Docker Compose application. The process may take 5~10 minutes depending on your machine and network connection. 
+The installation downloads the latest Docker images for TestGen and deploys a new Docker Compose application. The process may take 5~10 minutes depending on your machine and network connection.
 
 ```shell
 python3 dk-installer.py tg install
 ```
-Once it completes, verify that you can login to the UI with the URL and credentials provided in the output.
+The `--port` option may be used to set a custom localhost port for the application (default: 8501).
+
+Once the installation completes, verify that you can login to the UI with the URL and credentials provided in the output.
 
 ### Install the Observability application
 
@@ -71,12 +78,12 @@ python3 dk-installer.py obs install
 
 This step is required to access the application when using Docker driver on Mac or Windows. It may also be useful for installations on remote machines to access the UI from a local browser.
 
-Leave this process running, and continue the next steps on another terminal window.
-
 ```shell
 python3 dk-installer.py obs expose
 ```
-Verify that you can login to the UI with the URL and credentials provided in the output.
+The `--port` option may be used to set a custom localhost port for the application (default: 8082).
+
+Verify that you can login to the UI with the URL and credentials provided in the output. Leave this process running, and continue the next steps on another terminal window.
 
 ### Run the TestGen demo setup
 
