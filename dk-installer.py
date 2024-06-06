@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import dataclasses
 import datetime
+import ipaddress
 import json
 import logging
 import logging.config
@@ -42,6 +43,8 @@ HELM_APP = (
 HELM_DEFAULT_TIMEOUT = 10
 DOCKER_COMPOSE_FILE = "docker-compose.yml"
 DEFAULT_DOCKER_REGISTRY = "docker.io"
+DOCKER_NETWORK = "datakitchen-network"
+DOCKER_NETWORK_SUBNET = "192.168.60.0/24"
 POD_LOG_LIMIT = 10_000
 INSTALLER_NAME = pathlib.Path(__file__).name
 DEMO_CONFIG_FILE = "demo-config.json"
@@ -67,6 +70,7 @@ TESTGEN_COMPOSE_NAME = "testgen"
 TESTGEN_IMAGE_TAG = "v2"
 TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
+TESTGEN_DEFAULT_PORT = 8501
 
 LOG = logging.getLogger()
 
@@ -657,6 +661,36 @@ REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "c
 # Action and Steps implementations
 #
 
+class DockerNetworkStep(Step):
+    label = "Creating a Docker network"
+
+    def execute(self, action, args):
+        if args.prod == "tg" or args.driver == "docker":
+            try:
+                action.run_cmd(
+                    "docker",
+                    "network",
+                    "inspect",
+                    DOCKER_NETWORK,
+                )
+                LOG.info(f"Re-using existing Docker network '{DOCKER_NETWORK}'")
+                raise SkipStep
+            except CommandFailed:
+                LOG.info(f"Creating Docker network '{DOCKER_NETWORK}'")
+                action.run_cmd(
+                    "docker",
+                    "network",
+                    "create",
+                    "--subnet",
+                    DOCKER_NETWORK_SUBNET,
+                    "--gateway",
+                    # IP at index 0 is unavailable
+                    str(ipaddress.IPv4Network(DOCKER_NETWORK_SUBNET)[1]),
+                    DOCKER_NETWORK,
+                )
+        else:
+            raise SkipStep
+
 
 class MinikubeProfileStep(Step):
     label = "Starting a new minikube profile"
@@ -694,6 +728,9 @@ class MinikubeProfileStep(Step):
             f"--namespace={args.namespace}",
             f"--driver={args.driver}",
             f"--kubernetes-version={MINIKUBE_KUBE_VER}",
+            f"--network={DOCKER_NETWORK}",
+            # minikube tries to use gateway + 1 by default, but that may be in use by TestGen - so we pass in a static IP at gateway + 4
+            f"--static-ip={str(ipaddress.IPv4Network(DOCKER_NETWORK_SUBNET)[5])}",
             "--embed-certs",
             "--extra-config=apiserver.service-node-port-range=1-65535",
             "--extra-config=kubelet.allowed-unsafe-sysctls=net.core.somaxconn",
@@ -923,6 +960,7 @@ class ObsGenerateDemoConfigStep(Step):
 
 class ObsInstallAction(MultiStepAction):
     steps = [
+        DockerNetworkStep(),
         MinikubeProfileStep(),
         SetupHelmReposStep(),
         ObsHelmInstallServicesStep(),
@@ -1081,6 +1119,18 @@ class ObsDeleteAction(Action):
         else:
             delete_file(DEMO_CONFIG_FILE)
             delete_file(CREDENTIALS_FILE.format(args.prod))
+            
+            try:
+                self.run_cmd(
+                    "docker",
+                    "network",
+                    "rm",
+                    DOCKER_NETWORK,
+                )
+            except CommandFailed:
+                LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
+                pass
+
             CONSOLE.msg("Minikube profile deleted")
 
 
@@ -1096,6 +1146,8 @@ class DemoContainerAction(Action):
             f"type=bind,source=.{os.path.sep}{DEMO_CONFIG_FILE},target=/dk/{DEMO_CONFIG_FILE}",
             "--name",
             DEMO_CONTAINER_NAME,
+            "--network",
+            DOCKER_NETWORK,
             "--add-host",
             "host.docker.internal:host-gateway",
             DEMO_IMAGE,
@@ -1291,11 +1343,13 @@ class TestGenCreateDockerComposeFileStep(Step):
                 container_name: testgen
                 environment: *common-variables
                 ports:
-                  - {port}:8501
+                  - {port}:{TESTGEN_DEFAULT_PORT}
                 extra_hosts:
                   - host.docker.internal:host-gateway
                 depends_on:
                   - postgres
+                networks:
+                  - datakitchen
 
               postgres:
                 image: postgres:14.1-alpine
@@ -1310,9 +1364,16 @@ class TestGenCreateDockerComposeFileStep(Step):
                   interval: 8s
                   timeout: 5s
                   retries: 3
+                networks:
+                  - datakitchen
 
             volumes:
               postgres_data:
+
+            networks:
+              datakitchen:
+                name: {DOCKER_NETWORK}
+                external: true
         """
             )
         )
@@ -1433,6 +1494,7 @@ class TestGenUpgradeDatabaseStep(Step):
 class TestgenInstallAction(MultiStepAction):
     steps = [
         TestGenVerifyExistingInstallStep(),
+        DockerNetworkStep(),
         TestGenCreateDockerComposeFileStep(),
         TestGenPullImagesStep(),
         TestGenStartStep(),
@@ -1457,7 +1519,7 @@ class TestgenInstallAction(MultiStepAction):
             "--port",
             dest="port",
             action="store",
-            default="8501",
+            default=TESTGEN_DEFAULT_PORT,
             help="Which port will be used to access Testgen UI. Defaults to %(default)s",
         )
         return parser
@@ -1506,7 +1568,20 @@ class TestgenDeleteAction(Action):
                 delete_file(DOCKER_COMPOSE_FILE)
 
             delete_file(CREDENTIALS_FILE.format(args.prod))
+            
+            try:
+                self.run_cmd(
+                    "docker",
+                    "network",
+                    "rm",
+                    DOCKER_NETWORK,
+                )
+            except CommandFailed:
+                LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
+                pass
+
             CONSOLE.msg("Docker resources deleted")
+
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
