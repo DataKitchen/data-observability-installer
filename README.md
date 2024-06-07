@@ -14,6 +14,16 @@ This repo contains the installer and quickstart setup for the DataKitchen Open S
 
 For background on why we build this product check out the articles on ['why we open sourced'](https://datakitchen.io/why-we-open-sourced-our-data-observability-products/), [manifesto](https://datajourneymanifesto.org/), [free book](https://datakitchen.io/the-dataops-cookbook/), and [top data observability and DataOps articles](https://datakitchen.io/datakitchen-resource-guide-to-data-journeys-data-observability-dataops/).
 
+## Features
+
+What does DataKitchen's  Open Source Data Observability do?  It helps you understand and find data issues in new data. It constantly watches your data for data quality issues and alerts you of problems.
+
+![DatKitchen Open Source Data Observability Features 1](https://datakitchen.io/wp-content/uploads/2024/06/Screenshot-2024-06-07-at-12.45.32 PM.png)
+
+It monitors multi-tool, multi-data sets, multi-hop, and data analytic production processes.  And it allows you to make fast, safe development changes.
+
+![DatKitchen Open Source Data Observability Features 2](https://datakitchen.io/wp-content/uploads/2024/06/Screenshot-2024-06-07-at-12.44.30 PM.png)
+
 ## Prerequisites
 
 ### Minimum system requirements
