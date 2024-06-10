@@ -16,13 +16,21 @@ For background on why we build this product check out the articles on ['why we o
 
 ## Features
 
-What does DataKitchen's  Open Source Data Observability do?  It helps you understand and find data issues in new data. It constantly watches your data for data quality issues and alerts you of problems.
+What does DataKitchen's  Open Source Data Observability do?  It helps you understand and find data issues in new data. 
 
-![DatKitchen Open Source Data Observability Features 1](https://datakitchen.io/wp-content/uploads/2024/06/Screenshot-2024-06-07-at-12.45.32 PM.png)
+![DatKitchen Open Source Data Observability Features -- New Data](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view.png)
 
-It monitors multi-tool, multi-data sets, multi-hop, and data analytic production processes.  And it allows you to make fast, safe development changes.
+It constantly watches your data for data quality issues and alerts you of problems.
 
-![DatKitchen Open Source Data Observability Features 2](https://datakitchen.io/wp-content/uploads/2024/06/Screenshot-2024-06-07-at-12.44.30 PM.png)
+![DatKitchen Open Source Data Observability Features - Data Ingestion and Polling](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-1.png)
+
+It monitors multi-tool, multi-data sets, multi-hop, and data analytic production processes.  
+
+![DatKitchen Open Source Data Observability Features -- Data Production](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-2.png)
+
+And it allows you to make fast, safe development changes.
+
+![DatKitchen Open Source Data Observability Features -- Development CI-CD](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-4.png)
 
 ## Prerequisites
 
