@@ -16,21 +16,26 @@ For background on why we build this product check out the articles on ['why we o
 
 ## Features
 
-What does DataKitchen's  Open Source Data Observability do?  It helps you understand and find data issues in new data. 
+What does DataKitchen's  Open Source Data Observability do?  It helps you understand and <b>find data issues in new data</b>. 
+<p align="center">
+<img alt="DatKitchen Open Source Data Observability Features - New Data" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view.png" width="70%" >
+</p>
+It constantly <b>watches your data for data quality anomalies</b> and alerts you of problems.
+<br></br>
+<p align="center">
+<img alt="DatKitchen Open Source Data Observability Features - Data Ingestion and Polling" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-1.png" width="70%" >
+</p>
+It monitors <b>multi-tool, multi-data set, multi-hop data analytic production</b> processes.  
+<br></br>
+<p align="center">
+<img alt="DatKitchen Open Source Data Observability Features - Data Production" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-2.png" width="70%" >
+</p>
+And it allows you to <b>make fast, safe development changes</b>.
+<br></br>
+<p align="center">
+<img alt="DatKitchen Open Source Data Observability Features - Development CI-CD" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-4.png" width="70%" >
+</p>
 
-![DatKitchen Open Source Data Observability Features -- New Data](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view.png)
-
-It constantly watches your data for data quality issues and alerts you of problems.
-
-![DatKitchen Open Source Data Observability Features - Data Ingestion and Polling](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-1.png)
-
-It monitors multi-tool, multi-data sets, multi-hop, and data analytic production processes.  
-
-![DatKitchen Open Source Data Observability Features -- Data Production](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-2.png)
-
-And it allows you to make fast, safe development changes.
-
-![DatKitchen Open Source Data Observability Features -- Development CI-CD](https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-4.png)
 
 ## Prerequisites
 
