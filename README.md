@@ -215,7 +215,7 @@ python3 dk-installer.py obs delete
 ## Community
 
 ### Getting Started Guide
-We recommend you start by going through the [Data Observability Overview Demo](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview).
+We recommend you review the [Data Observability Overview Demo](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview).
 
 ### Support
 For support requests, [join the Data Observability Slack](https://data-observability-slack.datakitchen.io/join) and ask post on #support channel.
@@ -230,6 +230,8 @@ Join our community here:
 * 🐦 [Follow us on Twitter](https://twitter.com/i/flow/login?redirect_after_login=%2Fdatakitchen_io)
 
 * 🕴️ [Follow us on LinkedIn](https://www.linkedin.com/company/datakitchen)
+
+* 📺 [Get Free Data Observability and Data Quality Testing Certificationn](https://info.datakitchen.io/webinar-2024-05-video-form-data-observability-and-data-quality-testing-certification-series)
 
 * 📺 [Get Free DataOps Fundamentals Certification](https://info.datakitchen.io/training-certification-dataops-fundamentals)
 
