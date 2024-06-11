@@ -245,7 +245,7 @@ Join our community here:
 
 
 ### Contributing
-For details on contributing or running the project for development, check out our contributing guide (coming soon!).
+For details on contributing or running the project for development, check out our [contributing guide](https://github.com/DataKitchen/data-observability-installer/blob/main/CONTRIBUTING.md).
 
 ### License
 DataKitchen DataOps Observability is Apache 2.0 licensed.
