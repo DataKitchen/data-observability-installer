@@ -1342,6 +1342,8 @@ class TestGenCreateDockerComposeFileStep(Step):
                 image: {image_repo}:{image_tag}
                 container_name: testgen
                 environment: *common-variables
+                volumes:
+                  - testgen_data:/var/lib/testgen
                 ports:
                   - {port}:{TESTGEN_DEFAULT_PORT}
                 extra_hosts:
@@ -1369,6 +1371,7 @@ class TestGenCreateDockerComposeFileStep(Step):
 
             volumes:
               postgres_data:
+              testgen_data:
 
             networks:
               datakitchen:
