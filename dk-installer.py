@@ -1362,7 +1362,7 @@ class TestGenCreateDockerComposeFileStep(Step):
                 volumes:
                   - postgres_data:/var/lib/postgresql/data
                 healthcheck:
-                  test: ["CMD-SHELL", "pg_isready -U postgres"]
+                  test: ["CMD-SHELL", "pg_isready -U {username}"]
                   interval: 8s
                   timeout: 5s
                   retries: 3
