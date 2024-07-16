@@ -145,6 +145,10 @@ def get_testgen_status(action):
             return install
     return {}
 
+def get_testgen_volumes(action):
+    volumes = action.run_cmd("docker", "volume", "list", "--format=json", capture_json_lines=True)
+    return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
+
 
 def do_request(url, method="GET", headers=None, params=None, data=None, verify=True):
     query_params = ""
@@ -452,6 +456,7 @@ class Action:
         *cmd,
         input=None,
         capture_json=False,
+        capture_json_lines=False,
         capture_text=False,
         echo=False,
         raise_on_non_zero=True,
@@ -475,6 +480,15 @@ class Action:
                 except json.JSONDecodeError:
                     LOG.warning("Error decoding JSON from stdout")
                     return {}
+            elif capture_json_lines:
+                json_lines = []
+                for idx, output_line in enumerate(stdout):
+                    try:
+                        json_lines.append(json.loads(output_line.decode()))
+                    except json.JSONDecodeError:
+                        LOG.warning(f"Error decoding JSON from stdout line #{idx}")
+                return json_lines
+
 
     @contextlib.contextmanager
     def start_cmd(self, *cmd, raise_on_non_zero=True, env=None, **popen_args):
@@ -1200,12 +1214,15 @@ class TestGenVerifyExistingInstallStep(Step):
 
     def pre_execute(self, action, args):
         tg_status = get_testgen_status(action)
-        if tg_status:
-            CONSOLE.msg("Found TestGen docker compose containers. If a previous attempt to run")
+        tg_volumes = get_testgen_volumes(action)
+        if tg_status or tg_volumes:
+            CONSOLE.msg("Found TestGen docker compose containers and/or volumes. If a previous attempt to run this")
             CONSOLE.msg(
-                f"this installer failed, please run `python3 {INSTALLER_NAME} {args.prod} delete` before trying again."
+                f"installer failed, please run `python3 {INSTALLER_NAME} {args.prod} delete` before trying again."
             )
             CONSOLE.space()
+            if tg_volumes:
+                tg_status["Volumes"] = ", ".join([v.get("Name", "N/A") for v in tg_volumes])
             for k, v in tg_status.items():
                 CONSOLE.msg(f"{k:>15}: {v}")
             raise AbortAction
@@ -1550,9 +1567,19 @@ class TestgenUpgradeAction(MultiStepAction):
 
 class TestgenDeleteAction(Action):
     args_cmd = "delete"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_CONFIG]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
 
     def execute(self, args):
+        if (pathlib.Path() / DOCKER_COMPOSE_FILE).exists():
+            self._delete_project(args)
+            self._delete_network()
+        else:
+            # Trying to delete the network before any exception
+            self._delete_network()
+            # Trying to delete dangling volumes
+            self._delete_volumes()
+
+    def _delete_project(self, args):
         CONSOLE.title("Delete TestGen instance")
         try:
             self.run_cmd(
@@ -1562,28 +1589,40 @@ class TestgenDeleteAction(Action):
                 *([] if args.keep_images else ["--rmi", "all"]),
                 "--volumes",
                 echo=True,
+                raise_on_non_zero=True,
             )
         except CommandFailed:
-            LOG.exception("Error deleting Docker resources")
             CONSOLE.msg("Could NOT delete the Docker resources")
+            raise AbortAction
         else:
             if not args.keep_config:
                 delete_file(DOCKER_COMPOSE_FILE)
-
             delete_file(CREDENTIALS_FILE.format(args.prod))
-            
+            CONSOLE.msg("Docker containers and volumes deleted")
+
+    def _delete_network(self):
             try:
                 self.run_cmd(
                     "docker",
                     "network",
                     "rm",
                     DOCKER_NETWORK,
+                    raise_on_non_zero=True,
                 )
             except CommandFailed:
                 LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
-                pass
+            else:
+                CONSOLE.msg("Docker network deleted")
 
-            CONSOLE.msg("Docker resources deleted")
+    def _delete_volumes(self):
+        if volumes := get_testgen_volumes(self):
+            try:
+                self.run_cmd("docker", "volume", "rm", *[v["Name"] for v in volumes], raise_on_non_zero=True)
+            except CommandFailed:
+                CONSOLE.msg("Could NOT delete docker volumes. Please delete them manually")
+                raise AbortAction
+            else:
+                CONSOLE.msg("Docker volumes deleted")
 
 
     def get_parser(self, sub_parsers):
