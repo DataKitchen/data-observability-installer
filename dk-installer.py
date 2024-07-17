@@ -1287,6 +1287,10 @@ class TestGenCreateDockerComposeFileStep(Step):
         if not all([self.username, self.password]):
             CONSOLE.msg(f"Unable to retrieve username and password from {action.docker_compose_file.absolute()}")
             raise AbortAction
+        
+        if args.ssl_cert_file and not args.ssl_key_file or not args.ssl_cert_file and args.ssl_key_file:
+            CONSOLE.msg("Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.")
+            raise AbortAction
 
     def execute(self, action, args):
         if action.using_existing:
@@ -1300,6 +1304,8 @@ class TestGenCreateDockerComposeFileStep(Step):
                 args.port,
                 image_repo=self.image_repo,
                 image_tag=self.image_tag,
+                ssl_cert_file=args.ssl_cert_file,
+                ssl_key_file=args.ssl_key_file,
             )
 
     def on_action_success(self, action, args):
@@ -1309,8 +1315,9 @@ class TestGenCreateDockerComposeFileStep(Step):
         else:
             CONSOLE.msg(f"Created new {DOCKER_COMPOSE_FILE} file using image {self.image_repo}:{self.image_tag}")
 
+        protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
         info_lines = [
-            f"User Interface: http://localhost:{args.port}",
+            f"User Interface: {protocol}://localhost:{args.port}",
             "CLI Access: docker compose exec engine bash",
             "",
             f"Username: {self.username}",
@@ -1338,7 +1345,21 @@ class TestGenCreateDockerComposeFileStep(Step):
                 break
         return username, password
 
-    def create_compose_file(self, file, username, password, port, image_repo, image_tag):
+    def create_compose_file(self, file, username, password, port, image_repo, image_tag, ssl_cert_file, ssl_key_file):
+        ssl_variables = """
+              SSL_CERT_FILE: /dk/ssl/cert.crt
+              SSL_KEY_FILE: /dk/ssl/cert.key
+        """ if ssl_cert_file and ssl_key_file else ""
+        
+        ssl_volumes = f"""
+                  - type: bind
+                    source: {ssl_cert_file}
+                    target: /dk/ssl/cert.crt
+                  - type: bind
+                    source: {ssl_key_file}
+                    target: /dk/ssl/cert.key 
+        """ if ssl_cert_file and ssl_key_file else ""
+        
         file.write_text(
             textwrap.dedent(
                 f"""
@@ -1353,6 +1374,7 @@ class TestGenCreateDockerComposeFileStep(Step):
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
               TG_DOCKER_RELEASE_CHECK_ENABLED: yes
+              {ssl_variables}
 
             services:
               engine:
@@ -1361,6 +1383,7 @@ class TestGenCreateDockerComposeFileStep(Step):
                 environment: *common-variables
                 volumes:
                   - testgen_data:/var/lib/testgen
+                  {ssl_volumes}      
                 ports:
                   - {port}:{TESTGEN_DEFAULT_PORT}
                 extra_hosts:
@@ -1541,6 +1564,20 @@ class TestgenInstallAction(MultiStepAction):
             action="store",
             default=TESTGEN_DEFAULT_PORT,
             help="Which port will be used to access Testgen UI. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--ssl-cert-file",
+            dest="ssl_cert_file",
+            action="store",
+            default=None,
+            help="Path to SSL certificate file.",
+        )
+        parser.add_argument(
+            "--ssl-key-file",
+            dest="ssl_key_file",
+            action="store",
+            default=None,
+            help="Path to SSL key file.",
         )
         return parser
 
