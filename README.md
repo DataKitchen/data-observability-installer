@@ -89,6 +89,8 @@ python3 dk-installer.py tg install
 ```
 The `--port` option may be used to set a custom localhost port for the application (default: 8501).
 
+To enable SSL for HTTPS support, use the `--ssl-cert-file` and `--ssl-key-file` options to specify local file paths to your SSL certificate and key files.
+
 Once the installation completes, verify that you can login to the UI with the URL and credentials provided in the output.
 
 ### Install the Observability application
