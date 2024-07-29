@@ -67,7 +67,8 @@ DEFAULT_OBS_MEMORY = 4096
 BASE_API_URL_TPL = "{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
-TESTGEN_IMAGE_TAG = "v2"
+TESTGEN_LATEST_TAG = "v2"
+TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
@@ -399,10 +400,10 @@ class Action:
 
     def _msg_unexpected_error(self):
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
-        CONSOLE.msg(
-            f"An unexpected error has happened. For assistance, please reach out to "
-            f"the #support channel on https://data-observability-slack.datakitchen.io/join, attaching {msg_file_path}"
-        )
+        CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
+        CONSOLE.msg("")
+        CONSOLE.msg("For assistance, reach out the #support channel on https://data-observability-slack.datakitchen.io/join, attaching the logs.")
+        CONSOLE.msg("")
 
     def execute_with_log(self, args):
         with self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"), self.configure_logging(debug=args.debug):
@@ -1260,7 +1261,7 @@ class TestGenVerifyVersionStep(Step):
             
     def execute(self, action, args):
         contents = action.docker_compose_file.read_text()
-        new_contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_IMAGE_TAG}\n", contents)
+        new_contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_LATEST_TAG}\n", contents)
         action.docker_compose_file.write_text(new_contents)       
 
 
@@ -1269,8 +1270,6 @@ class TestGenCreateDockerComposeFileStep(Step):
     label = "Creating the docker-compose definition file"
 
     def __init__(self):
-        self.image_tag = TESTGEN_IMAGE_TAG
-        self.image_repo = "datakitchen/dataops-testgen"
         self.username = None
         self.password = None
 
@@ -1296,14 +1295,13 @@ class TestGenCreateDockerComposeFileStep(Step):
         if action.using_existing:
             LOG.info("Re-using existing [%s]", action.docker_compose_file)
         else:
-            LOG.info("Creating [%s] for tag [%s]", action.docker_compose_file, self.image_tag)
+            LOG.info("Creating [%s] for image [%s]", action.docker_compose_file, args.image)
             self.create_compose_file(
                 action.docker_compose_file,
                 self.username,
                 self.password,
                 args.port,
-                image_repo=self.image_repo,
-                image_tag=self.image_tag,
+                image=args.image,
                 ssl_cert_file=args.ssl_cert_file,
                 ssl_key_file=args.ssl_key_file,
             )
@@ -1313,7 +1311,7 @@ class TestGenCreateDockerComposeFileStep(Step):
         if action.using_existing:
             CONSOLE.msg(f"Used existing compose file: {action.docker_compose_file}")
         else:
-            CONSOLE.msg(f"Created new {DOCKER_COMPOSE_FILE} file using image {self.image_repo}:{self.image_tag}")
+            CONSOLE.msg(f"Created new {DOCKER_COMPOSE_FILE} file using image {args.image}")
 
         protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
         info_lines = [
@@ -1345,7 +1343,7 @@ class TestGenCreateDockerComposeFileStep(Step):
                 break
         return username, password
 
-    def create_compose_file(self, file, username, password, port, image_repo, image_tag, ssl_cert_file, ssl_key_file):
+    def create_compose_file(self, file, username, password, port, image, ssl_cert_file, ssl_key_file):
         ssl_variables = """
               SSL_CERT_FILE: /dk/ssl/cert.crt
               SSL_KEY_FILE: /dk/ssl/cert.key
@@ -1378,7 +1376,7 @@ class TestGenCreateDockerComposeFileStep(Step):
 
             services:
               engine:
-                image: {image_repo}:{image_tag}
+                image: {image}
                 container_name: testgen
                 environment: *common-variables
                 volumes:
@@ -1564,6 +1562,13 @@ class TestgenInstallAction(MultiStepAction):
             action="store",
             default=TESTGEN_DEFAULT_PORT,
             help="Which port will be used to access Testgen UI. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--image",
+            dest="image",
+            action="store",
+            default=TESTGEN_DEFAULT_IMAGE,
+            help="TestGen image to use for the install. Defaults to %(default)s",
         )
         parser.add_argument(
             "--ssl-cert-file",
