@@ -31,7 +31,7 @@ import zipfile
 MINIKUBE_PROFILE = "dk-observability"
 MINIKUBE_KUBE_VER = "v1.29"
 NAMESPACE = "datakitchen"
-HELM_REPOS = (("datakitchen", "http://charts.datakitchen.io/"),)
+HELM_REPOS = (("datakitchen", "https://datakitchen.github.io/dataops-observability/"),)
 HELM_SERVICES = (
     "dataops-observability-services",
     os.environ.get("HELM_FOLDER", "datakitchen/dataops-") + "observability-services",
