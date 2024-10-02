@@ -1233,6 +1233,9 @@ class TestGenVerifyVersionStep(Step):
     label = "Verifying latest version"
 
     def pre_execute(self, action, args):
+        if args.skip_verify:
+            return
+
         try:
             output = action.run_cmd(
                 "docker",
@@ -1260,6 +1263,9 @@ class TestGenVerifyVersionStep(Step):
                 raise AbortAction
             
     def execute(self, action, args):
+        if args.skip_verify:
+            raise SkipStep
+        
         contents = action.docker_compose_file.read_text()
         new_contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_LATEST_TAG}\n", contents)
         action.docker_compose_file.write_text(new_contents)       
@@ -1605,6 +1611,15 @@ class TestgenUpgradeAction(MultiStepAction):
 
     def __init__(self):
         self.docker_compose_file = pathlib.Path() / DOCKER_COMPOSE_FILE
+
+    def get_parser(self, sub_parsers):
+        parser = super().get_parser(sub_parsers)
+        parser.add_argument(
+            "--skip-verify",
+            dest="skip_verify",
+            action="store_true",
+            help="Whether to skip the version check before upgrading.",
+        )
 
 
 class TestgenDeleteAction(Action):
