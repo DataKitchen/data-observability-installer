@@ -22,7 +22,7 @@ import time
 import urllib.request
 import urllib.parse
 import zipfile
-
+from pathlib import Path
 
 #
 # Initial setup
@@ -127,9 +127,7 @@ def write_credentials_file(product, lines):
     try:
         if detect_os() == 'Windows':
             home_dir = pathlib.Path.home()
-            credentials_folder = home_dir.joinpath("Documents", "dk-installer")
-            if not credentials_folder.exists():
-                credentials_folder.mkdir(parents=True, exist_ok=True)
+            credentials_folder = home_dir.joinpath("Documents", "DataKitchenApps")
             os.makedirs(credentials_folder, exist_ok=True)
             file_name = os.path.join(credentials_folder, CREDENTIALS_FILE.format(product))
         else:
@@ -153,6 +151,7 @@ def get_testgen_status(action):
         if install["Name"] == TESTGEN_COMPOSE_NAME:
             return install
     return {}
+
 
 def get_testgen_volumes(action):
     volumes = action.run_cmd("docker", "volume", "list", "--format=json", capture_json_lines=True)
@@ -282,7 +281,6 @@ class Requirement:
 
     def check_availability(self, action, args):
         try:
-            self.cmd = get_docker_compose_base_command()
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
         except CommandFailed:
             CONSOLE.msg(f"The installer could not verify that '{self.name}' is available.")
@@ -346,12 +344,11 @@ class Action:
     def init_session_folder(self, prefix):
         if detect_os() == 'Windows':
             home_dir = pathlib.Path.home()
-            data_folder = home_dir.joinpath("Documents", "dk-installer", "logs")
-            if not data_folder.exists():
-                data_folder.mkdir(parents=True, exist_ok=True)
+            data_folder = home_dir.joinpath("Documents", "DataKitchenApps", "logs")
+            os.makedirs(data_folder, exist_ok=True)
         else:
             script_path = pathlib.Path(sys.argv[0]).absolute()
-            data_folder = script_path.parent.joinpath("dk-installer")
+            data_folder = script_path.parent.joinpath("DataKitchenApps")
 
         data_folder.mkdir(exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -469,16 +466,16 @@ class Action:
         raise NotImplementedError
 
     def run_cmd(
-            self,
-            *cmd,
-            input=None,
-            capture_json=False,
-            capture_json_lines=False,
-            capture_text=False,
-            echo=False,
-            raise_on_non_zero=True,
-            env=None,
-            **popen_args,
+        self,
+        *cmd,
+        input=None,
+        capture_json=False,
+        capture_json_lines=False,
+        capture_text=False,
+        echo=False,
+        raise_on_non_zero=True,
+        env=None,
+        **popen_args,
     ):
         with self.start_cmd(*cmd, raise_on_non_zero=raise_on_non_zero, env=env, **popen_args) as (proc, stdout, stderr):
             if input:
@@ -512,10 +509,7 @@ class Action:
         started = time.time()
         self._cmd_idx += 1
 
-        flattened_cmd = [str(item) for sublist in cmd for item in
-                         (sublist if isinstance(sublist, tuple) else [sublist])]
-
-        LOG.debug("Command [%04d]: [%s]", self._cmd_idx, " ".join(flattened_cmd))
+        LOG.debug("Command [%04d]: [%s]", self._cmd_idx, " ".join(cmd))
 
         if isinstance(env, dict):
             LOG.debug("Command [%04d] extra ENV: [%s]", self._cmd_idx, ", ".join(env.keys()))
@@ -523,7 +517,7 @@ class Action:
 
         try:
             proc = subprocess.Popen(
-                flattened_cmd,
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE,
@@ -534,7 +528,7 @@ class Action:
             LOG.error("Command [%04d] failed to find the executable", self._cmd_idx)
             raise CommandFailed(self._cmd_idx, cmd, None) from e
 
-        slug_cmd = re.sub(r"[^a-zA-Z]+", "-", " ".join(flattened_cmd))[:100].strip("-")
+        slug_cmd = re.sub(r"[^a-zA-Z]+", "-", " ".join(cmd))[:100].strip("-")
 
         def get_stream_iterator(stream_name):
             file_name = f"{self._cmd_idx:04d}-{stream_name}-{slug_cmd}.txt"
@@ -1180,20 +1174,21 @@ class DemoContainerAction(Action):
 
     def run_dk_demo_container(self, command: str):
         with self.start_cmd(
-                "docker",
-                get_docker_compose_path(),
-                "run",
-                "--rm",
-                "--mount",
-                f"type=bind,source=.{os.path.sep}{DEMO_CONFIG_FILE},target=/dk/{DEMO_CONFIG_FILE}",
-                "--name",
-                DEMO_CONTAINER_NAME,
-                "--network",
-                DOCKER_NETWORK,
-                "--add-host",
-                "host.docker.internal:host-gateway",
-                DEMO_IMAGE,
-                command,
+            "docker",
+            "-f",
+            get_docker_compose_path(),
+            "run",
+            "--rm",
+            "--mount",
+            f"type=bind,source=.{os.path.sep}{DEMO_CONFIG_FILE},target=/dk/{DEMO_CONFIG_FILE}",
+            "--name",
+            DEMO_CONTAINER_NAME,
+            "--network",
+            DOCKER_NETWORK,
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            DEMO_IMAGE,
+            command,
         ) as (proc, stdout, stderr):
             try:
                 for line in stdout:
@@ -1261,15 +1256,17 @@ class TestGenVerifyVersionStep(Step):
 
     def pre_execute(self, action, args):
         try:
-            base_command = list(get_docker_compose_base_command())
-
-            base_command.extend([
+            output = action.run_cmd(
+                "docker",
+                "compose",
+                "-f",
+                get_docker_compose_path(),
                 "exec",
                 "engine",
                 "testgen",
-                "--help"
-            ])
-            output = action.run_cmd(base_command, capture_text=True)
+                "--help",
+                capture_text=True
+            )
 
             match = re.search(r"This version:(.*)\s+Latest version:(.*)\s", output)
             current_version = match.group(1)
@@ -1302,6 +1299,7 @@ class TestGenCreateDockerComposeFileStep(Step):
         self.password = None
 
     def pre_execute(self, action, args):
+        action.docker_compose_file = Path(get_docker_compose_path())
         if action.docker_compose_file.exists():
             self.username, self.password = self.get_credentials_from_compose_file(
                 action.docker_compose_file.read_text()
@@ -1385,6 +1383,10 @@ class TestGenCreateDockerComposeFileStep(Step):
                     target: /dk/ssl/cert.key 
         """ if ssl_cert_file and ssl_key_file else ""
         compose_file_path = get_docker_compose_path()
+
+        if isinstance(compose_file_path, str):
+            compose_file_path = Path(compose_file_path)
+
         compose_file_path.write_text(
             textwrap.dedent(
                 f"""
@@ -1475,14 +1477,16 @@ class TestGenPullImagesStep(Step):
                 remaining_attemps -= 1
 
     def _collect_images_sha(self, action):
-        base_command = list(get_docker_compose_base_command())
-
-        base_command.extend([
+        images = action.run_cmd(
+            "docker",
+            "compose",
+            "-f",
+            get_docker_compose_path(),
             "images",
             "--format",
-            "json"
-        ])
-        images = action.run_cmd(base_command, capture_json=True)
+            "json",
+            capture_json=True,
+        )
         image_repo_tags = [":".join((img["Repository"], img["Tag"])) for img in images]
         collect_images_digest(action, image_repo_tags)
 
@@ -1498,14 +1502,17 @@ class TestGenStartStep(Step):
 
     def execute(self, action, args):
         action.run_cmd(
-            get_docker_compose_base_command() + (
-                "up",
-                "--wait",
-            ))
+            "docker",
+            "compose",
+            "-f",
+            get_docker_compose_path(),
+            "up",
+            "--wait",
+            )
 
     def on_action_fail(self, action, args):
         if action.args_cmd == "install":
-            action.run_cmd(get_docker_compose_base_command() + ("down", "--volumes"))
+            action.run_cmd("docker", "compose", "-f", get_docker_compose_path(), "down", "--volumes")
 
 
 class TestGenStopStep(Step):
@@ -1513,9 +1520,12 @@ class TestGenStopStep(Step):
 
     def execute(self, action, args):
         action.run_cmd(
-            get_docker_compose_base_command() + (
+            "docker",
+            "compose",
+            "-f",
+            get_docker_compose_path(),
             "down",
-        ))
+            )
 
 
 class TestGenSetupDatabaseStep(Step):
@@ -1523,13 +1533,16 @@ class TestGenSetupDatabaseStep(Step):
 
     def execute(self, action, args):
         action.run_cmd(
-            get_docker_compose_base_command() + (
+            "docker",
+            "compose",
+            "-f",
+            get_docker_compose_path(),
             "exec",
             "engine",
             "testgen",
             "setup-system-db",
             "--yes",
-        ))
+            )
 
 
 class TestGenUpgradeDatabaseStep(Step):
@@ -1543,22 +1556,29 @@ class TestGenUpgradeDatabaseStep(Step):
             raise SkipStep
         else:
             action.run_cmd(
-                get_docker_compose_base_command() + (
+                "docker",
+                "compose",
+                "-f",
+                get_docker_compose_path(),
                 "exec",
                 "engine",
                 "testgen",
                 "upgrade-system-version",
-            ))
+                )
 
     def on_action_success(self, action, args):
-        base_command = list(get_docker_compose_base_command())
-        base_command.extend([
+        output = action.run_cmd(
+            "docker",
+            "compose",
+            "-f",
+            get_docker_compose_path(),
             "exec",
             "engine",
             "testgen",
-            "--help"
-        ])
-        output = action.run_cmd(base_command, capture_text=True)
+            "--help",
+            capture_text=True,
+        )
+
         match = re.search("This version:(.*)", output)
         CONSOLE.msg(f"Application version: {match.group(1)}")
         CONSOLE.space()
@@ -1650,7 +1670,10 @@ class TestgenDeleteAction(Action):
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
 
     def execute(self, args):
-        if get_docker_compose_path().exists():
+        home_dir = pathlib.Path.home()
+        docker_compose_path = home_dir.joinpath("Documents", "DataKitchenApps", "docker-compose.yml")
+
+        if docker_compose_path.exists():
             self._delete_project(args)
             self._delete_network()
         else:
@@ -1663,7 +1686,10 @@ class TestgenDeleteAction(Action):
         CONSOLE.title("Delete TestGen instance")
         try:
             self.run_cmd(
-                get_docker_compose_base_command(),
+                "docker",
+                "compose",
+                "-f",
+                get_docker_compose_path(),
                 "down",
                 *([] if args.keep_images else ["--rmi", "all"]),
                 "--volumes",
@@ -1680,7 +1706,6 @@ class TestgenDeleteAction(Action):
             CONSOLE.msg("Docker containers and volumes deleted")
 
     def _delete_network(self):
-        start_time = time.time()
         try:
             self.run_cmd(
                 "docker",
@@ -1688,12 +1713,8 @@ class TestgenDeleteAction(Action):
                 "network",
                 "rm",
                 DOCKER_NETWORK,
-                timeout=60,
                 raise_on_non_zero=True,
             )
-            if time.time() - start_time > 60:
-                LOG.info(f"Timeout: Took too long to delete Docker network '{DOCKER_NETWORK}'")
-                return -1
         except CommandFailed:
             LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
         else:
@@ -1702,7 +1723,7 @@ class TestgenDeleteAction(Action):
     def _delete_volumes(self):
         if volumes := get_testgen_volumes(self):
             try:
-                self.run_cmd("docker", "volume", "rm", *[v["Name"] for v in volumes], raise_on_non_zero=True)
+                self.run_cmd("docker", "-f", get_docker_compose_path(), "volume", "rm", *[v["Name"] for v in volumes], raise_on_non_zero=True)
             except CommandFailed:
                 CONSOLE.msg("Could NOT delete docker volumes. Please delete them manually")
                 raise AbortAction
@@ -1767,7 +1788,7 @@ class TestgenRunDemoAction(DemoContainerAction):
                 ]
             )
 
-        docker_exec_command = [get_docker_compose_base_command() + ("exec", "engine")]
+        docker_exec_command = ["docker", "compose", "-f", get_docker_compose_path(), "exec", "engine"]
         cli_commands = [
             quick_start_command,
             [
@@ -1830,10 +1851,7 @@ class TestgenDeleteDemoAction(DemoContainerAction):
     def execute(self, args):
         CONSOLE.title("Delete TestGen demo")
         try:
-            if detect_os() == 'Windows':
-                pass
-            else:
-                self.run_dk_demo_container("tg-delete-demo")
+            self.run_dk_demo_container("tg-delete-demo")
         except Exception:
             pass
 
@@ -1841,14 +1859,18 @@ class TestgenDeleteDemoAction(DemoContainerAction):
         tg_status = get_testgen_status(self)
         if tg_status:
             self.run_cmd(
-                get_docker_compose_base_command() + (
-                    "exec",
-                    "engine",
-                    "testgen",
-                    "setup-system-db",
-                    "--delete-db",
-                    "--yes",
-                ))
+                "docker",
+                "compose",
+                "-f",
+                get_docker_compose_path(),
+                "exec",
+                "engine",
+                "testgen",
+                "setup-system-db",
+                "--delete-db",
+                "--yes",
+                )
+
             CONSOLE.title("Demo data DELETED")
         else:
             CONSOLE.msg("TestGen must be running for its demo data to be cleaned.")
@@ -1866,21 +1888,15 @@ def flatten_command(cmd):
             yield str(item)
 
 
-def get_docker_compose_base_command():
-    docker_compose_path = get_docker_compose_path()
-    ret = ["docker", "compose"]
-    if docker_compose_path:
-        ret.extend(["-f", str(docker_compose_path)])
-    return tuple(ret)
-
-
 def get_docker_compose_path():
     if detect_os() == 'Windows':
         home_dir = pathlib.Path.home()
-        data_folder = home_dir.joinpath("Documents", "dk-installer", "docker-compose.yml")
-        return data_folder
+        data_folder = home_dir.joinpath("Documents", "DataKitchenApps", "docker-compose.yml")
+        return str(data_folder)
     else:
-        return None
+        current_dir = pathlib.Path(os.getcwd())
+        data_folder = current_dir.joinpath("docker-compose.yml")
+        return str(data_folder)
 
 
 def detect_os():
@@ -2015,13 +2031,23 @@ def run_installer_instance(arguments=None):
             TestgenDeleteDemoAction(),
         ],
     )
-    installer_instance.run()
+    return installer_instance.run()
+
+
+def detect_run_file():
+    if getattr(sys, 'frozen', False):
+        script_name = os.path.basename(sys.executable)
+    else:
+        script_name = os.path.basename(__file__)
+    return script_name
 
 
 if __name__ == "__main__":
     arguments = sys.argv[1:]
-    print("DataKitchen Installer")
-    if len(arguments) == 0:
-        show_main_menu()
+    if detect_run_file() == "dk-installer.exe":
+        print("DataKitchen Installer")
+        if len(arguments) == 0:
+            show_main_menu()
 
-    run_installer_instance(arguments)
+    code = run_installer_instance(arguments)
+    exit(code)

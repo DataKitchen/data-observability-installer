@@ -5,8 +5,6 @@ This document describes how to set up your local environment for dk-installer de
 ### Prerequisites
 
 - [Python 3](https://www.python.org/downloads/)
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
-
 
 ### Install dependencies
 
@@ -29,4 +27,5 @@ In python's terminal
 ```
 pyinstaller dk-installer.py --onefile
 ```
-This will create a ```dk-installer.spec``` file, ```dist``` and ```build``` folders. Inside ```dist``` it will be the ```dk-installer.exe```.
+This will create a ```dk-installer.spec``` file, ```dist``` and ```build``` folders. Inside ```dist``` it will be the 
+```dk-installer.exe```.
