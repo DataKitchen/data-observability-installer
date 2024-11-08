@@ -2034,17 +2034,9 @@ def run_installer_instance(arguments=None):
     return installer_instance.run()
 
 
-def detect_run_file():
-    if getattr(sys, 'frozen', False):
-        script_name = os.path.basename(sys.executable)
-    else:
-        script_name = os.path.basename(__file__)
-    return script_name
-
-
 if __name__ == "__main__":
     arguments = sys.argv[1:]
-    if detect_run_file() == "dk-installer.exe":
+    if getattr(sys, 'frozen', False):
         print("DataKitchen Installer")
         if len(arguments) == 0:
             show_main_menu()
