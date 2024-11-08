@@ -71,6 +71,8 @@ TESTGEN_LATEST_TAG = "v2"
 TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
+TESTGEN_SYS_DB_TIMEOUT = 120
+TESTGEN_SYS_DB_RETRIES = 1
 TESTGEN_DEFAULT_PORT = 8501
 
 LOG = logging.getLogger()
@@ -465,6 +467,27 @@ class Action:
     def execute(self, args):
         raise NotImplementedError
 
+    def run_cmd_retries(self, *cmd, timeout, retries, raise_on_non_zero=True, env=None, **popen_args):
+        cmd_fail_exception = None
+        while retries > 0:
+            try:
+                with self.start_cmd(*cmd, env=env, **popen_args) as (proc, *_):
+                    try:
+                        proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired as e:
+                        LOG.warning("Command timed out. [%s] remaining attempts", retries - 1)
+                        proc.kill()
+                        raise CommandFailed from e
+            except CommandFailed as e:
+                cmd_fail_exception = e
+            else:
+                cmd_fail_exception = None
+            finally:
+                retries -= 1
+
+        if cmd_fail_exception and (isinstance(cmd_fail_exception.__cause__, subprocess.TimeoutExpired) or raise_on_non_zero):
+            raise cmd_fail_exception
+
     def run_cmd(
         self,
         *cmd,
@@ -545,8 +568,8 @@ class Action:
                 raise CommandFailed
         # We capture and raise CommandFailed to allow the client code to raise an empty CommandFailed exception
         # but still get a contextualized exception at the end
-        except CommandFailed:
-            raise CommandFailed(self._cmd_idx, cmd, proc.returncode)
+        except CommandFailed as e:
+            raise CommandFailed(self._cmd_idx, cmd, proc.returncode) from e.__cause__
         finally:
             elapsed = time.time() - started
             LOG.info(
@@ -1453,28 +1476,21 @@ class TestGenPullImagesStep(Step):
     label = "Pulling docker images"
 
     def execute(self, action, args):
-        remaining_attemps = TESTGEN_PULL_RETRIES
-        docker_compose_file_path = get_docker_compose_path()
-        while True:
-            try:
-                with action.start_cmd("docker", "compose", "-f", docker_compose_file_path, "pull") as (
-                        proc, stdout, stderr):
-
-                    try:
-                        proc.wait(timeout=TESTGEN_PULL_TIMEOUT)
-                    except subprocess.TimeoutExpired:
-                        LOG.warning(
-                            "Timed out pulling TestGen's docker images. [%s] remaining attempts", remaining_attemps - 1
-                        )
-                        proc.kill()
-            except CommandFailed:
-                if not remaining_attemps:
-                    # Pulling the images before starting is not mandatory, so we just proceed if it fails
-                    raise SkipStep
-            else:
-                return
-            finally:
-                remaining_attemps -= 1
+        try:
+            action.run_cmd_retries(
+                "docker",
+                "compose",
+                "-f",
+                get_docker_compose_path(),
+                "pull",
+                "--policy",
+                "always",
+                timeout=TESTGEN_PULL_TIMEOUT,
+                retries=TESTGEN_PULL_RETRIES,
+            )
+        except CommandFailed:
+            # Pulling the images before starting is not mandatory, so we just proceed if it fails
+            raise SkipStep
 
     def _collect_images_sha(self, action):
         images = action.run_cmd(
@@ -1530,9 +1546,10 @@ class TestGenStopStep(Step):
 
 class TestGenSetupDatabaseStep(Step):
     label = "Initializing the platform database"
+    required = False
 
     def execute(self, action, args):
-        action.run_cmd(
+        action.run_cmd_retries(
             "docker",
             "compose",
             "-f",
@@ -1542,6 +1559,8 @@ class TestGenSetupDatabaseStep(Step):
             "testgen",
             "setup-system-db",
             "--yes",
+            retries=TESTGEN_SYS_DB_RETRIES,
+            timeout=TESTGEN_SYS_DB_TIMEOUT,
             )
 
 
