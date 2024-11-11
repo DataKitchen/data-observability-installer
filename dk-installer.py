@@ -350,7 +350,7 @@ class Action:
             os.makedirs(data_folder, exist_ok=True)
         else:
             script_path = pathlib.Path(sys.argv[0]).absolute()
-            data_folder = script_path.parent.joinpath("DataKitchenApps")
+            data_folder = script_path.parent.joinpath(".dk-installer")
 
         data_folder.mkdir(exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1278,6 +1278,8 @@ class TestGenVerifyVersionStep(Step):
     label = "Verifying latest version"
 
     def pre_execute(self, action, args):
+        if args.skip_verify:
+            return
         try:
             output = action.run_cmd(
                 "docker",
@@ -1622,10 +1624,7 @@ class TestgenInstallAction(MultiStepAction):
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
 
     def __init__(self):
-        if detect_os() == 'Windows':
-            self.docker_compose_file = get_docker_compose_path()
-        else:
-            self.docker_compose_file = pathlib.Path() / DOCKER_COMPOSE_FILE
+        self.docker_compose_file = get_docker_compose_path()
         self.using_existing = False
 
     def get_parser(self, sub_parsers):
