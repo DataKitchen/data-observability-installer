@@ -746,7 +746,7 @@ class MinikubeProfileStep(Step):
     def execute(self, action, args):
         action.run_cmd(
             "minikube",
-            f"start",
+            "start",
             f"--memory={args.memory}",
             f"--profile={args.profile}",
             f"--namespace={args.namespace}",
@@ -784,14 +784,18 @@ class SetupHelmReposStep(Step):
 
 class HelmInstallStep(Step):
     chart_info: tuple[str, str] = None
+    values_arg: str = None
 
     def execute(self, action, args):
         release, chart_ref = self.chart_info
+        values_file = getattr(args, self.values_arg) if self.values_arg else None
+        values = ("--values", values_file) if values_file else ()
         action.run_cmd(
             "helm",
             "install",
             release,
             chart_ref,
+            *values,
             f"--namespace={args.namespace}",
             "--create-namespace",
             "--wait",
@@ -848,8 +852,28 @@ class ObsHelmInstallServicesStep(HelmInstallStep):
 class ObsHelmInstallPlatformStep(HelmInstallStep):
     label = "Installing helm charts for Observability platform"
     chart_info = HELM_APP
+    values_arg = "app_values"
 
     def execute(self, action, args):
+        if args.docker_username and args.docker_password:
+            action.run_cmd(
+                "minikube",
+                "kubectl",
+                "--profile",
+                args.profile,
+                "--",
+                "--namespace",
+                args.namespace,
+                "create",
+                "secret",
+                "docker-registry",
+                "docker-hub-pull-secrets",
+                "--docker-username",
+                args.docker_username,
+                "--docker-password",
+                args.docker_password,
+            )
+
         super().execute(action, args)
 
         if not (
@@ -1035,6 +1059,24 @@ class ObsInstallAction(MultiStepAction):
                 "Maximum amount of time in minutes that helm will be allowed to install a release. "
                 "Defaults to '%(default)s'"
             ),
+        )
+        parser.add_argument(
+            "--app-values",
+            type=str,
+            action="store",
+            help="Override values for Helm app install. Specify path to a YAML file or URL.",
+        )
+        parser.add_argument(
+            "--docker-username",
+            type=str,
+            action="store",
+            help="Docker username for pulling app images.",
+        )
+        parser.add_argument(
+            "--docker-password",
+            type=str,
+            action="store",
+            help="Docker password for pulling app images.",
         )
         return parser
 
