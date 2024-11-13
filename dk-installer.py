@@ -459,6 +459,27 @@ class Action:
     def execute(self, args):
         raise NotImplementedError
 
+    def run_cmd_retries(self, *cmd, timeout, retries, raise_on_non_zero=True, env=None, **popen_args):
+        cmd_fail_exception = None
+        while retries > 0:
+            try:
+                with self.start_cmd(*cmd, env=env, **popen_args) as (proc, *_):
+                    try:
+                        proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired as e:
+                        LOG.warning("Command timed out. [%d] remaining attempts", retries - 1)
+                        proc.kill()
+                        raise CommandFailed from e
+            except CommandFailed as e:
+                cmd_fail_exception = e
+            else:
+                cmd_fail_exception = None
+            finally:
+                retries -= 1
+
+        if cmd_fail_exception and (isinstance(cmd_fail_exception.__cause__, subprocess.TimeoutExpired) or raise_on_non_zero):
+            raise cmd_fail_exception
+
     def run_cmd(
         self,
         *cmd,
@@ -1481,33 +1502,21 @@ class TestGenPullImagesStep(Step):
     label = "Pulling docker images"
 
     def execute(self, action, args):
-        remaining_attemps = TESTGEN_PULL_RETRIES
-        while True:
-            try:
-                with action.start_cmd(
-                    "docker",
-                    "compose",
-                    "-f",
-                    action.docker_compose_file_path,
-                    "pull",
-                    "--policy",
-                    "always",
-                ) as (proc, stdout, stderr):
-                    try:
-                        proc.wait(timeout=TESTGEN_PULL_TIMEOUT)
-                    except subprocess.TimeoutExpired:
-                        LOG.warning(
-                            "Timed out pulling TestGen's docker images. [%s] remaining attempts", remaining_attemps - 1
-                        )
-                        proc.kill()
-            except CommandFailed:
-                if not remaining_attemps:
-                    # Pulling the images before starting is not mandatory, so we just proceed if it fails
-                    raise SkipStep
-            else:
-                return
-            finally:
-                remaining_attemps -= 1
+        try:
+            action.run_cmd_retries(
+                "docker",
+                "compose",
+                "-f",
+                action.docker_compose_file_path,
+                "pull",
+                "--policy",
+                "always",
+                timeout=TESTGEN_PULL_TIMEOUT,
+                retries=TESTGEN_PULL_RETRIES,
+            )
+        except CommandFailed:
+            # Pulling the images before starting is not mandatory, so we just proceed if it fails
+            raise SkipStep
 
     def _collect_images_sha(self, action):
         images = action.run_cmd(
