@@ -145,6 +145,7 @@ def get_testgen_status(action):
             return install
     return {}
 
+
 def get_testgen_volumes(action):
     volumes = action.run_cmd("docker", "volume", "list", "--format=json", capture_json_lines=True)
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
@@ -619,8 +620,9 @@ class Installer:
         self.parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
         self.sub_parsers = self.parser.add_subparsers(help="Products", required=True)
 
-    def run(self):
-        args = self.parser.parse_args()
+    def run(self, def_args):
+        # def_args has to be None to preserve the argparser behavior when only part of the arguments are used
+        args = self.parser.parse_args(def_args or None)
 
         if not hasattr(args, "func"):
             self.parser.print_usage()
@@ -1284,11 +1286,12 @@ class TestGenVerifyVersionStep(Step):
     def pre_execute(self, action, args):
         if args.skip_verify:
             return
-
         try:
             output = action.run_cmd(
                 "docker",
                 "compose",
+                "-f",
+                action.docker_compose_file_path,
                 "exec",
                 "engine",
                 "testgen",
@@ -1481,7 +1484,15 @@ class TestGenPullImagesStep(Step):
         remaining_attemps = TESTGEN_PULL_RETRIES
         while True:
             try:
-                with action.start_cmd("docker", "compose", "pull", "--policy", "always") as (proc, stdout, stderr):
+                with action.start_cmd(
+                    "docker",
+                    "compose",
+                    "-f",
+                    action.docker_compose_file_path,
+                    "pull",
+                    "--policy",
+                    "always",
+                ) as (proc, stdout, stderr):
                     try:
                         proc.wait(timeout=TESTGEN_PULL_TIMEOUT)
                     except subprocess.TimeoutExpired:
@@ -1499,7 +1510,16 @@ class TestGenPullImagesStep(Step):
                 remaining_attemps -= 1
 
     def _collect_images_sha(self, action):
-        images = action.run_cmd("docker", "compose", "images", "--format", "json", capture_json=True)
+        images = action.run_cmd(
+            "docker",
+            "compose",
+            "-f",
+            action.docker_compose_file_path,
+            "images",
+            "--format",
+            "json",
+            capture_json=True,
+        )
         image_repo_tags = [":".join((img["Repository"], img["Tag"])) for img in images]
         collect_images_digest(action, image_repo_tags)
 
@@ -1517,13 +1537,15 @@ class TestGenStartStep(Step):
         action.run_cmd(
             "docker",
             "compose",
+            "-f",
+            action.docker_compose_file_path,
             "up",
             "--wait",
         )
 
     def on_action_fail(self, action, args):
         if action.args_cmd == "install":
-            action.run_cmd("docker", "compose", "down", "--volumes")
+            action.run_cmd("docker", "compose", "-f", action.docker_compose_file_path, "down", "--volumes")
 
 
 class TestGenStopStep(Step):
@@ -1533,6 +1555,8 @@ class TestGenStopStep(Step):
         action.run_cmd(
             "docker",
             "compose",
+            "-f",
+            action.docker_compose_file_path,
             "down",
         )
 
@@ -1544,6 +1568,8 @@ class TestGenSetupDatabaseStep(Step):
         action.run_cmd(
             "docker",
             "compose",
+            "-f",
+            action.docker_compose_file_path,
             "exec",
             "engine",
             "testgen",
@@ -1565,6 +1591,8 @@ class TestGenUpgradeDatabaseStep(Step):
             action.run_cmd(
                 "docker",
                 "compose",
+                "-f",
+                action.docker_compose_file_path,
                 "exec",
                 "engine",
                 "testgen",
@@ -1696,6 +1724,8 @@ class TestgenDeleteAction(Action, TestgenActionMixin):
             self.run_cmd(
                 "docker",
                 "compose",
+                "-f",
+                self.docker_compose_file_path,
                 "down",
                 *([] if args.keep_images else ["--rmi", "all"]),
                 "--volumes",
@@ -1707,23 +1737,17 @@ class TestgenDeleteAction(Action, TestgenActionMixin):
             raise AbortAction
         else:
             if not args.keep_config:
-                delete_file(DOCKER_COMPOSE_FILE)
-            delete_file(CREDENTIALS_FILE.format(args.prod))
+                delete_file(self.docker_compose_file_path)
+            delete_file(self.data_folder / CREDENTIALS_FILE.format(args.prod))
             CONSOLE.msg("Docker containers and volumes deleted")
 
     def _delete_network(self):
-            try:
-                self.run_cmd(
-                    "docker",
-                    "network",
-                    "rm",
-                    DOCKER_NETWORK,
-                    raise_on_non_zero=True,
-                )
-            except CommandFailed:
-                LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
-            else:
-                CONSOLE.msg("Docker network deleted")
+        try:
+            self.run_cmd("docker", "network", "rm", DOCKER_NETWORK, raise_on_non_zero=True)
+        except CommandFailed:
+            LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
+        else:
+            CONSOLE.msg("Docker network deleted")
 
     def _delete_volumes(self):
         if volumes := get_testgen_volumes(self):
@@ -1734,7 +1758,6 @@ class TestgenDeleteAction(Action, TestgenActionMixin):
                 raise AbortAction
             else:
                 CONSOLE.msg("Docker volumes deleted")
-
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
@@ -1794,7 +1817,6 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
                 ]
             )
 
-        docker_exec_command = ["docker", "compose", "exec", "engine"]
         cli_commands = [
             quick_start_command,
             [
@@ -1845,8 +1867,8 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
             )
 
         for command in cli_commands:
-            CONSOLE.msg(f"Running command : {' '.join(docker_exec_command)} {' '.join(command)}")
-            self.run_cmd(*docker_exec_command, *command)
+            CONSOLE.msg(f"Running command : docker compose exec engine {' '.join(command)}")
+            self.run_cmd("docker", "compose", "-f", self.docker_compose_file_path, "exec", "engine", *command)
 
         CONSOLE.msg("Completed creating demo!")
 
@@ -1867,6 +1889,8 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
             self.run_cmd(
                 "docker",
                 "compose",
+                "-f",
+                self.docker_compose_file_path,
                 "exec",
                 "engine",
                 "testgen",
@@ -1874,6 +1898,7 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
                 "--delete-db",
                 "--yes",
             )
+
             CONSOLE.title("Demo data DELETED")
         else:
             CONSOLE.msg("TestGen must be running for its demo data to be cleaned.")
@@ -1884,7 +1909,96 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
 # Entrypoint
 #
 
-if __name__ == "__main__":
+def show_menu():
+    print("\n" + "=" * 20)
+    print("  Choose a Product   ")
+    print("=" * 20)
+    print(" 1. TestGen            ")
+    print(" 2. Observability      ")
+    print(" 0. Exit               ")
+    print("=" * 20)
+    print()
+
+
+def get_menu_choice():
+    while True:
+        try:
+            choice = int(input("Enter your choice (0-2): "))
+            print("")
+            if choice == 0:
+                print("Exiting...")
+                exit(0)
+
+            elif choice == 1:
+                print("\n" + "=" * 30)
+                print("        TestGen Menu        ")
+                print("=" * 30)
+                print(" 1. Install TestGen          ")
+                print(" 2. Upgrade TestGen          ")
+                print(" 3. Install TestGen demo data")
+                print(" 4. Delete TestGen demo data ")
+                print(" 5. Uninstall TestGen        ")
+                print(" 6. Return to main menu      ")
+                print(" 0. Exit                     ")
+                print("=" * 30)
+                print()
+                action = int(input("Enter your choice (0-6): "))
+                if action == 6:
+                    return []
+                elif action == 1:
+                    return ["tg", "install"]
+                elif action == 2:
+                    return ['tg', 'upgrade']
+                elif action == 5:
+                    return ['tg', 'delete']
+                elif action == 3:
+                    return ['tg', 'run-demo']
+                elif action == 4:
+                    return ['tg', 'delete-demo']
+                elif action == 0:
+                    print("exiting...")
+                    exit(0)
+
+            elif choice == 2:
+                print("\n" + "=" * 35)
+                print("        Observability Menu        ")
+                print("=" * 35)
+                print("You selected Observability.")
+                print("1. Install Observability")
+                print("2. Upgrade Observability")
+                print("3. Install Observability demo data")
+                print("4. Delete Observability demo data")
+                print("5. Run heartbeat demo")
+                print("6. Delete Observability")
+                print("7. Return main menu")
+                print("0. Exit")
+                print("=" * 35)
+                print()
+                action = int(input("Enter your choice (0-7): "))
+                if action == 7:
+                    return []
+                elif action == 1:
+                    return ['obs', 'install']
+                elif action == 2:
+                    return ['obs', 'upgrade']
+                elif action == 6:
+                    return ['obs', 'delete']
+                elif action == 3:
+                    return ['obs', 'run-demo']
+                elif action == 4:
+                    return ['obs', 'delete-demo']
+                elif action == 5:
+                    return ['obs', 'run-heartbeat-demo']
+                elif action == 0:
+                    print("exiting...")
+                    exit(0)
+            else:
+                print("Invalid option. Please choose a number between 0 and 7.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+
+def get_installer_instance():
     installer_instance = Installer()
     installer_instance.add_product(
         "obs",
@@ -1908,4 +2022,18 @@ if __name__ == "__main__":
             TestgenDeleteDemoAction(),
         ],
     )
-    sys.exit(installer_instance.run())
+    return installer_instance
+
+
+if __name__ == "__main__":
+    installer = get_installer_instance()
+    args = []
+
+    # Show the menu when running from the windows .exe without arguments
+    if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
+        print("DataKitchen Installer")
+        while not args:
+            show_menu()
+            args = get_menu_choice()
+
+    exit(installer.run(args))
