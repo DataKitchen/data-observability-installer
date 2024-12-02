@@ -10,3 +10,4 @@ Thanks to everyone who has contributed to Data Observability Installer!
 - [Ricardo Boni](https://www.linkedin.com/in/ricardo-boni-9b15744/) 💻 📖
 - [Aarthy Adityan](https://www.linkedin.com/in/aarthyadityan) 💻 📖
 - [Chris Bergh](https://www.linkedin.com/in/chrisbergh/) 💻 📖
+- [Astor Fernandez](https://www.linkedin.com/in/astorfernandez/) 💻
