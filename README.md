@@ -74,6 +74,8 @@ curl -o dk-installer.py 'https://raw.githubusercontent.com/DataKitchen/data-obse
 * All commands listed below should be run from the folder containing this file.
 * For usage help and command options, run `python3 dk-installer.py --help` or `python3 dk-installer.py <command> --help`.
 
+On Windows operating systems, you can also download the executable file [`dk-installer.exe`](https://github.com/DataKitchen/data-observability-installer/releases/download/latest/dk-installer.exe) and run it by double-clicking the file.
+
 ## Quickstart Guide
 
 The [Data Observability quickstart](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview) walks you through Dataops Observability and TestGen capabilities to demonstrate how our products cover critical use cases for data and analytic teams.

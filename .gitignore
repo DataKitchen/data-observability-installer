@@ -18,3 +18,9 @@ testgen_demo.log
 .python-version
 venv
 *.pyc
+
+# PyInstaller
+build/
+dist/
+*.egg-info/
+dk-installer.spec
