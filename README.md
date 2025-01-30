@@ -52,15 +52,15 @@ And it allows you to <b>make fast, safe development changes</b>.
 | Software                | Tested Versions               | Command to check version                |
 |-------------------------|-------------------------|-------------------------------|
 | [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12                | `python3 --version`                |
-| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 25.0.3, 26.1.1 <br/> 2.24.6, 2.27.0        | `docker -v` <br/> `docker compose version`         |
+| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 25.0, 26.1, 27.5 <br/> 2.30, 2.31, 2.32        | `docker -v` <br/> `docker compose version`         |
 
 #### Additional Requirements for Observability only
 
 | Software                | Tested Versions               | Command to check version                |
 |-------------------------|-------------------------|-------------------------------|
-| [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.32.0, 1.33.0, 1.34.0                | `minikube version`                |
-| [Helm](https://helm.sh/docs/intro/install/)            | 3.13.3, 3.14.3        | `helm version`         |
-| Minikube Driver <br/>- macOS on Intel chip: [HyperKit](https://minikube.sigs.k8s.io/docs/drivers/hyperkit/) <br/>- Other operating systems: [Docker](https://minikube.sigs.k8s.io/docs/drivers/docker/) | <br/>0.20210107 <br/> 25.0.3, 26.1.1             | <br/>`hyperkit -v` <br/>`docker -v`         |
+| [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.32, 1.33, 1.34                | `minikube version`                |
+| [Helm](https://helm.sh/docs/intro/install/)            | 3.13, 3.14        | `helm version`         |
+| Minikube Driver <br/>- macOS on Intel chip: [HyperKit](https://minikube.sigs.k8s.io/docs/drivers/hyperkit/) <br/>- Other operating systems: [Docker](https://minikube.sigs.k8s.io/docs/drivers/docker/) | <br/>0.20210107 <br/> 25.0, 26.1, 27.5             | <br/>`hyperkit -v` <br/>`docker -v`         |
 
 ### Download the installer
 
