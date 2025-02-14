@@ -1947,7 +1947,7 @@ def get_menu_choice():
                 print(" 0. Exit                     ")
                 print("=" * 30)
                 print()
-                action = int(input("Enter your choice (0-6): "))
+                action = int(input("Enter your choice (0-6):"))
                 if action == 6:
                     return []
                 elif action == 1:
