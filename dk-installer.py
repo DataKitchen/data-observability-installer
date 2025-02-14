@@ -336,6 +336,11 @@ class Action:
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
         if platform.system() == 'Windows':
+            output = subprocess.check_output("wmic os get Caption", shell=True, text=True)
+            if "Pro" not in output:
+                print("WARNING: Your Windows edition is not compatible with Docker.")
+                self.show_menu()
+
             self.data_folder = pathlib.Path.home().joinpath("Documents", "DataKitchenApps")
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
@@ -1927,7 +1932,7 @@ def get_menu_choice():
             print("")
             if choice == 0:
                 print("Exiting...")
-                exit(0)
+                sys.exit(0)
 
             elif choice == 1:
                 print("\n" + "=" * 30)
@@ -1942,7 +1947,7 @@ def get_menu_choice():
                 print(" 0. Exit                     ")
                 print("=" * 30)
                 print()
-                action = int(input("Enter your choice (0-6): "))
+                action = int(input("Enter your choice (0-6):"))
                 if action == 6:
                     return []
                 elif action == 1:
@@ -1957,7 +1962,7 @@ def get_menu_choice():
                     return ['tg', 'delete-demo']
                 elif action == 0:
                     print("exiting...")
-                    exit(0)
+                    sys.exit(0)
 
             elif choice == 2:
                 print("\n" + "=" * 35)
@@ -1991,7 +1996,7 @@ def get_menu_choice():
                     return ['obs', 'run-heartbeat-demo']
                 elif action == 0:
                     print("exiting...")
-                    exit(0)
+                    sys.exit(0)
             else:
                 print("Invalid option. Please choose a number between 0 and 7.")
         except ValueError:
@@ -2036,4 +2041,4 @@ if __name__ == "__main__":
             show_menu()
             args = get_menu_choice()
 
-    exit(installer.run(args))
+    installer.run(args)
