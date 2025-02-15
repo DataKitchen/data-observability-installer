@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import contextlib
 import dataclasses
 import datetime
+import functools
+import hashlib
 import ipaddress
 import json
 import logging
@@ -21,6 +24,7 @@ import textwrap
 import time
 import urllib.request
 import urllib.parse
+import uuid
 import zipfile
 
 #
@@ -62,7 +66,7 @@ SERVICES_URLS = {
     "agent-api": "{}/api/agent/v1",
 }
 DEFAULT_EXPOSE_PORT = 8082
-DEFAULT_OBS_MEMORY = 4096
+DEFAULT_OBS_MEMORY = "4096m"
 BASE_API_URL_TPL = "{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
@@ -72,12 +76,21 @@ TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
 
+MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
+MIXPANEL_URL = "https://api.mixpanel.com"
+MIXPANEL_TIMEOUT = 3
+
+DEFAULT_USER_DATA = {
+    "name": "Admin",
+    "email": "email@example.com",
+    "username": "admin",
+}
+
 LOG = logging.getLogger()
 
 #
 # Utility functions
 #
-
 
 def collect_images_digest(action, images, env=None):
     action.run_cmd(
@@ -150,26 +163,59 @@ def get_testgen_volumes(action):
     volumes = action.run_cmd("docker", "volume", "list", "--format=json", capture_json_lines=True)
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
+def _hash_value(value: bytes | str, digest_size: int = 8) -> str:
+    if isinstance(value, str):
+        value = value.encode()
+    return hashlib.blake2b(value, salt=get_instance_id().encode(), digest_size=digest_size).hexdigest()
 
-def do_request(url, method="GET", headers=None, params=None, data=None, verify=True):
-    query_params = ""
-    if params:
-        query_params = "?" + urllib.parse.urlencode(params)
-    request = urllib.request.Request(url + query_params, method=method, headers=headers or {})
-    if data:
-        request.data = json.dumps(data).encode()
-        request.add_header("Content-Type", "application/json")
 
-    ssl_context = None
-    if not verify:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(request, context=ssl_context) as response:
-        try:
-            return json.loads(response.read().decode())
-        except:
-            return {}
+@functools.cache
+def get_distinct_id():
+    return _hash_value(DEFAULT_USER_DATA["username"])
+
+
+@functools.cache
+def get_instance_id():
+    return hashlib.blake2b(uuid.getnode().to_bytes(length=8), digest_size=8).hexdigest()
+
+
+@functools.cache
+def get_installer_version():
+    return hashlib.md5(pathlib.Path(__file__).read_bytes()).hexdigest()
+
+
+def get_ssl_context():
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    return ssl_context
+
+
+def send_mp_request(endpoint, payload):
+    try:
+        post_data = urllib.parse.urlencode(
+            {"data": base64.b64encode(json.dumps(payload).encode()).decode()}
+        ).encode()
+
+        req = urllib.request.Request(f"{MIXPANEL_URL}/{endpoint}", data=post_data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        urllib.request.urlopen(req, context=get_ssl_context(), timeout=MIXPANEL_TIMEOUT)
+    except Exception:
+        LOG.exception("Failed to send analytics data")
+
+
+def send_mp_event(event_name, properties):
+    track_payload = {
+        "event": event_name,
+        "properties": {
+            "token": MIXPANEL_TOKEN,
+            "distinct_id": get_distinct_id(),
+            "instance_id": get_instance_id(),
+            **properties,
+        }
+    }
+    send_mp_request("track?ip=1", track_payload)
 
 
 class StreamIterator:
@@ -333,6 +379,9 @@ class Action:
     args_parser_parents: list = []
     requirements: list = []
 
+    def __init__(self):
+        self.additional_analytics: dict = {}
+
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
         if 'Windows' == platform.system():
@@ -405,14 +454,63 @@ class Action:
                 }
             )
 
+    @contextlib.contextmanager
+    def send_analytics_events(self, args):
+        start = time.time()
+        error = None
+        event_name = None
+
+        try:
+            yield
+        except AbortAction as e:
+            error = e
+            event_name = "aborted"
+            raise
+        except Exception as e:
+            error = e
+            event_name = "failed"
+            raise
+        else:
+            event_name = f"{args.prod}-{self.args_cmd}"
+        finally:
+            if args.send_analytics_data:
+                properties = {
+                    "prod": args.prod,
+                    "action": self.args_cmd,
+                    "elapsed": time.time() - start,
+                    "os_version": platform.release(),
+                    "os_arch": platform.machine(),
+                    "$os": platform.system(),
+                    "python_info": f"{platform.python_implementation()} {platform.python_version()}",
+                    "installer_version": get_installer_version(),
+                    **self.additional_analytics
+                }
+
+                error_chain = []
+                while error is not None:
+                    error_chain.append(f"{error.__class__.__name__}: {error}")
+                    error = error.__cause__
+                if error_chain:
+                    properties["error"] = " caused by ".join(error_chain)
+
+                send_mp_event(event_name, properties)
+
     def _msg_unexpected_error(self):
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
         CONSOLE.space()
-        CONSOLE.msg("For assistance, reach out the #support channel on https://data-observability-slack.datakitchen.io/join, attaching the logs.")
+        CONSOLE.msg(
+            "For assistance, reach out the #support channel on "
+            "https://data-observability-slack.datakitchen.io/join, "
+            "attaching the logs."
+        )
 
     def execute_with_log(self, args):
-        with self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"), self.configure_logging(debug=args.debug):
+        with (
+            self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"),
+            self.configure_logging(debug=args.debug),
+            self.send_analytics_events(args)
+        ):
             # Collecting basic system information for troubleshooting
             LOG.info(
                 "System info: %s | %s",
@@ -429,9 +527,15 @@ class Action:
                 platform.python_implementation(),
                 platform.python_version(),
             )
+            LOG.info(
+                "Installer version: %s",
+                get_installer_version()
+            )
 
             try:
-                if not all((req.check_availability(self, args) for req in self.requirements)):
+                missing_reqs = [req.name for req in self.requirements if not req.check_availability(self, args)]
+                if missing_reqs:
+                    self.additional_analytics["missing_requirements"] = missing_reqs
                     CONSOLE.msg("Not all requirements are fulfilled")
                     raise AbortAction
 
@@ -446,9 +550,10 @@ class Action:
                 LOG.exception("Uncaught error: %r", e)
                 self._msg_unexpected_error()
                 raise InstallerError from e
-            except KeyboardInterrupt:
-                CONSOLE.msg("Processing interrupted. The platform might be left in a inconsistent state.")
-                raise AbortAction
+            except KeyboardInterrupt as e:
+                CONSOLE.space()
+                CONSOLE.msg("Processing interrupted. This may result in an inconsistent platform state.")
+                raise AbortAction from e
 
     def get_parser(self, sub_parsers):
         parser = sub_parsers.add_parser(self.args_cmd, parents=self.args_parser_parents)
@@ -571,9 +676,9 @@ class Action:
 
 class MultiStepAction(Action):
     steps: list[Step]
-    label = "Process"
-    title = ""
-    intro_text = ""
+    label: str = "Process"
+    title: str = ""
+    intro_text: list[str] = []
 
     def execute(self, args):
         CONSOLE.title(self.title)
@@ -581,18 +686,20 @@ class MultiStepAction(Action):
             try:
                 LOG.debug("Running step [%s] pre-execute", step)
                 step.pre_execute(self, args)
-            except InstallerError:
-                raise
+            except InstallerError as e:
+                LOG.info("Step [%s] pre-execute failed", step)
+                raise e.__class__(f"Failed step pre-execute: {step.__class__.__name__}") from e
             except Exception as e:
                 LOG.exception("Step [%s] pre-execute failed", step)
-                raise InstallerError from e
+                raise InstallerError(f"Failed step: {step.__class__.__name__}") from e
 
         CONSOLE.space()
-        if self.intro_text:
-            CONSOLE.msg(self.intro_text)
+        for line in self.intro_text:
+            CONSOLE.msg(line)
         CONSOLE.space()
         executed_steps: list[Step] = []
         action_fail_exception = None
+        action_fail_step = None
         for step in self.steps:
             executed_steps.append(step)
             with CONSOLE:
@@ -609,6 +716,7 @@ class MultiStepAction(Action):
                     CONSOLE.send("FAILED")
                     if step.required:
                         action_fail_exception = e
+                        action_fail_step = step
                     else:
                         LOG.warning(f"Non-required step [%s] failed with: %s", step, e)
                 else:
@@ -631,14 +739,23 @@ class MultiStepAction(Action):
                 LOG.exception("Post-execution of step [%s] failed", step)
 
         if action_fail_exception:
-            raise action_fail_exception
+            raise action_fail_exception.__class__(
+                f"Failed step: {action_fail_step.__class__.__name__}"
+            ) from action_fail_exception
 
 
 class Installer:
     def __init__(self):
         self.parser = argparse.ArgumentParser(description="DataKitchen Installer")
         self.parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
-        self.sub_parsers = self.parser.add_subparsers(help="Products", required=True)
+        self.parser.add_argument(
+            "--no-analytics",
+            default=True,
+            dest="send_analytics_data",
+            action="store_false",
+            help="Disable from sending anonymous analytics data to Datakitchen. Default is to send."
+        )
+        self.sub_parsers = self.parser.add_subparsers(help="Products", required=True, title="product", description="Select which product to install or perform other actions")
 
     def run(self, def_args=None):
         # def_args has to be None to preserve the argparser behavior when only part of the arguments are used
@@ -648,7 +765,7 @@ class Installer:
             self.parser.print_usage()
             return 2
 
-        CONSOLE.title("DataKitchen Data Observability Installer")
+        CONSOLE.title("DataKitchen DataOps Installer")
 
         try:
             args.func(args)
@@ -662,7 +779,7 @@ class Installer:
     def add_product(self, prefix, actions, defaults=None):
         prod_parser = self.sub_parsers.add_parser(prefix)
         prod_parser.set_defaults(prod=prefix, **(defaults or {}))
-        prod_sub_parsers = prod_parser.add_subparsers(required=True)
+        prod_sub_parsers = prod_parser.add_subparsers(required=True, title="action")
 
         for action in actions:
             action.get_parser(prod_sub_parsers)
@@ -758,6 +875,12 @@ REQ_DOCKER_DAEMON = Requirement("Docker daemon process", ("docker", "info"))
 REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "compose", "config"))
 
 
+ANALYTICS_DISCLAIMER = [
+    "DataKitchen has enabled anonymous aggregate user behavior analytics.",
+    "Read the analytics documentation (and how to opt-out) here:",
+    "https://docs.datakitchen.io/articles/#!project-datakitchen-help/anonymous-analytics",
+]
+
 #
 # Action and Steps implementations
 #
@@ -822,6 +945,10 @@ class MinikubeProfileStep(Step):
             raise AbortAction
 
     def execute(self, action, args):
+
+        action.additional_analytics["minikube_mem"] = args.memory
+        action.additional_analytics["minikube_driver"] = args.driver
+
         action.run_cmd(
             "minikube",
             "start",
@@ -865,6 +992,8 @@ class HelmInstallStep(Step):
     values_arg: str = None
 
     def execute(self, action, args):
+        action.additional_analytics["helm_timeout"] = args.helm_timeout
+
         release, chart_ref = self.chart_info
         values_file = getattr(args, self.values_arg) if self.values_arg else None
         values = ("--values", values_file) if values_file else ()
@@ -1013,13 +1142,7 @@ class ObsDataInitializationStep(Step):
     _user_data = {}
 
     def execute(self, action, args):
-        self._user_data = {
-            "name": "Admin",
-            "email": "email@example.com",
-            "username": "admin",
-            "password": generate_password(),
-        }
-
+        self._user_data = {"password": generate_password(), **DEFAULT_USER_DATA}
         action.ctx["init_data"] = action.run_cmd(
             "minikube",
             "kubectl",
@@ -1097,13 +1220,17 @@ class ObsInstallAction(MultiStepAction):
 
     label = "Installation"
     title = "Install Observability"
-    intro_text = "This process may take 5~30 minutes depending on your system resources and network speed."
+    intro_text = [
+        "This process may take 5~30 minutes depending on your system resources and network speed.",
+        *ANALYTICS_DISCLAIMER
+    ]
 
     args_cmd = "install"
     args_parser_parents = [minikube_parser]
     requirements = [REQ_HELM, REQ_MINIKUBE, REQ_MINIKUBE_DRIVER]
 
     def __init__(self):
+        super().__init__()
         self.ctx = {}
 
     def execute_with_log(self, args):
@@ -1234,7 +1361,7 @@ class ObsExposeAction(Action):
 
             CONSOLE.msg("The services are no longer exposed.")
 
-        except Exception:
+        except Exception as e:
             LOG.exception("Something went wrong exposing the services ports")
             CONSOLE.space()
             CONSOLE.msg("The platform could not have its ports exposed.")
@@ -1245,7 +1372,7 @@ class ObsExposeAction(Action):
             CONSOLE.msg(
                 f"If port {args.port} is in use, use the command option --port to specify an alternate value."
             )
-            raise AbortAction
+            raise AbortAction from e
 
 
 class ObsDeleteAction(Action):
@@ -1362,6 +1489,9 @@ class TestGenVerifyVersionStep(Step):
     label = "Verifying latest version"
 
     def pre_execute(self, action, args):
+
+        action.additional_analytics["version_verify_skipped"] = args.skip_verify
+
         if args.skip_verify:
             return
         try:
@@ -1416,7 +1546,7 @@ class TestGenCreateDockerComposeFileStep(Step):
             )
             action.using_existing = True
         else:
-            self.username = "admin"
+            self.username = DEFAULT_USER_DATA["username"]
             self.password = generate_password()
 
         if not all([self.username, self.password]):
@@ -1428,6 +1558,11 @@ class TestGenCreateDockerComposeFileStep(Step):
             raise AbortAction
 
     def execute(self, action, args):
+
+        action.additional_analytics["used_custom_cert"] = args.ssl_cert_file and args.ssl_key_file
+        action.additional_analytics["existing_compose_file"] = action.using_existing
+        action.additional_analytics["used_custom_image"] = bool(args.image)
+
         if action.using_existing:
             LOG.info("Re-using existing [%s]", action.docker_compose_file_path)
         else:
@@ -1703,12 +1838,16 @@ class TestgenInstallAction(MultiStepAction, TestgenActionMixin):
 
     label = "Installation"
     title = "Install TestGen"
-    intro_text = "This process may take 5~10 minutes depending on your system resources and network speed."
+    intro_text = [
+        "This process may take 5~10 minutes depending on your system resources and network speed.",
+        *ANALYTICS_DISCLAIMER,
+    ]
 
     args_cmd = "install"
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
 
     def __init__(self):
+        super().__init__()
         self.using_existing = False
 
     def get_parser(self, sub_parsers):
@@ -1755,7 +1894,10 @@ class TestgenUpgradeAction(MultiStepAction, TestgenActionMixin):
 
     label = "Upgrade"
     title = "Upgrade TestGen"
-    intro_text = "This process may take 5~10 minutes depending on your system resources and network speed."
+    intro_text = [
+        "This process may take 5~10 minutes depending on your system resources and network speed.",
+        *ANALYTICS_DISCLAIMER,
+    ]
 
     args_cmd = "upgrade"
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_CONFIG]
@@ -1855,6 +1997,8 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
         return parser
 
     def execute(self, args):
+        self.additional_analytics["obs_export"] = args.obs_export
+
         CONSOLE.title("Run TestGen demo")
 
         tg_status = get_testgen_status(self)
@@ -1863,6 +2007,10 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
             raise AbortAction
 
         if args.obs_export:
+            if not (self.data_folder / DEMO_CONFIG_FILE).exists():
+                CONSOLE.msg("Observability demo configuration missing.")
+                raise AbortAction
+
             self.run_dk_demo_container("tg-run-demo")
 
         quick_start_command = [
@@ -1977,14 +2125,30 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
 
 
 def show_menu(installer):
-    tg_menu = Menu(installer.run, "TestGen")
+
+    cfg_options = {}
+
+    def add_config(key, value, msg=None):
+        cfg_options[key] = value
+        if msg:
+            print(f"\n{msg}\n")
+
+    def run_installer(args):
+        cfg_args = args[:]
+        for value in cfg_options.values():
+            if value is not None:
+                cfg_args.insert(0, value)
+        installer.run(cfg_args)
+
+    tg_menu = Menu(run_installer, "TestGen")
     tg_menu.add_option("Install TestGen", ["tg", "install"])
     tg_menu.add_option("Upgrade TestGen", ['tg', 'upgrade'])
     tg_menu.add_option("Install TestGen demo data", ['tg', 'run-demo'])
+    tg_menu.add_option("Install TestGen demo data with Observability export", ['tg', 'run-demo', '--export'])
     tg_menu.add_option("Delete TestGen demo data", ['tg', 'delete-demo'])
     tg_menu.add_option("Uninstall TestGen", ['tg', 'delete'])
 
-    obs_menu = Menu(installer.run, "Observability")
+    obs_menu = Menu(run_installer, "Observability")
     obs_menu.add_option("Install Observability", ['obs', 'install'])
     obs_menu.add_option("Upgrade Observability", ['obs', 'upgrade'])
     obs_menu.add_option("Install Observability demo data", ['obs', 'run-demo'])
@@ -1992,9 +2156,24 @@ def show_menu(installer):
     obs_menu.add_option("Run heartbeat demo", ['obs', 'run-heartbeat-demo'])
     obs_menu.add_option("Delete Observability", ['obs', 'delete'])
 
-    main_menu = Menu(installer.run, "Main", "DataKitchen Installer")
+    cfg_menu = Menu(add_config, "Configuration")
+    cfg_menu.add_option(
+        "Disable sending analytics data",
+        key="send_analytics_data",
+        value="--no-analytics",
+        msg="Sending analytcs data has been disabled for this session.",
+    )
+    cfg_menu.add_option(
+        "Enable sending analytics data",
+        key="send_analytics_data",
+        value=None,
+        msg="Sending analytics data has been enabled for this session.",
+    )
+
+    main_menu = Menu(None, "Main", "DataKitchen Installer")
     main_menu.add_submenu("TestGen", tg_menu)
     main_menu.add_submenu("Observability", obs_menu)
+    main_menu.add_submenu("Installer Configuration", cfg_menu)
     main_menu.run()
 
 
