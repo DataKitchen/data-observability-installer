@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import contextlib
 import dataclasses
 import datetime
@@ -13,7 +14,6 @@ import pathlib
 import platform
 import re
 import secrets
-import ssl
 import string
 import subprocess
 import sys
@@ -72,12 +72,14 @@ TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
 
+MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
+MIXPANEL_URL = "https://api.mixpanel.com/track"
+
 LOG = logging.getLogger()
 
 #
 # Utility functions
 #
-
 
 def collect_images_digest(action, images, env=None):
     action.run_cmd(
@@ -151,25 +153,24 @@ def get_testgen_volumes(action):
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
 
-def do_request(url, method="GET", headers=None, params=None, data=None, verify=True):
-    query_params = ""
-    if params:
-        query_params = "?" + urllib.parse.urlencode(params)
-    request = urllib.request.Request(url + query_params, method=method, headers=headers or {})
-    if data:
-        request.data = json.dumps(data).encode()
-        request.add_header("Content-Type", "application/json")
+def send_mp_event(event_name, properties):
+    payload = {
+        "event": event_name,
+        "properties": {
+            "token": MIXPANEL_TOKEN,
+            **properties
+        }
+    }
 
-    ssl_context = None
-    if not verify:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(request, context=ssl_context) as response:
-        try:
-            return json.loads(response.read().decode())
-        except:
-            return {}
+    post_data = urllib.parse.urlencode(
+        {"data": base64.b64encode(json.dumps(payload).encode()).decode()}
+    ).encode()
+
+    req = urllib.request.Request(MIXPANEL_URL, data=post_data, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+    urllib.request.urlopen(req)
+
 
 
 class StreamIterator:
@@ -405,15 +406,63 @@ class Action:
                 }
             )
 
+    @contextlib.contextmanager
+    def send_usage_events(self, args):
+
+        start = time.time()
+        error = None
+        event_name = None
+
+        try:
+            yield
+        except AbortAction as e:
+            error = e
+            event_name = "aborted"
+            raise
+        except Exception as e:
+            error = e
+            event_name = "failed"
+            raise
+        else:
+            event_name = f"{args.prod}-{self.args_cmd}"
+        finally:
+            if args.usage_data:
+                properties = {
+                    "prod": args.prod,
+                    "action": self.args_cmd,
+                    "elapsed": time.time() - start,
+                    "os_version": platform.release(),
+                    "os_arch": platform.machine(),
+                    "$os": platform.system(),
+                    "python_info": f"{platform.python_implementation()} {platform.python_version()}",
+                }
+
+                while error is not None:
+                    if str(error):
+                        properties["error"] = str(error)
+                        break
+                    else:
+                        error = error.__cause__
+
+                send_mp_event(event_name, properties)
+
     def _msg_unexpected_error(self):
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
         CONSOLE.msg("")
-        CONSOLE.msg("For assistance, reach out the #support channel on https://data-observability-slack.datakitchen.io/join, attaching the logs.")
+        CONSOLE.msg(
+            "For assistance, reach out the #support channel on "
+            "https://data-observability-slack.datakitchen.io/join, "
+            "attaching the logs."
+        )
         CONSOLE.msg("")
 
     def execute_with_log(self, args):
-        with self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"), self.configure_logging(debug=args.debug):
+        with (
+            self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"),
+            self.configure_logging(debug=args.debug),
+            self.send_usage_events(args)
+        ):
             # Collecting basic system information for troubleshooting
             LOG.info(
                 "System info: %s | %s",
@@ -432,9 +481,11 @@ class Action:
             )
 
             try:
-                if not all((req.check_availability(self, args) for req in self.requirements)):
-                    CONSOLE.msg("Not all requirements are fulfilled")
-                    raise AbortAction
+                missing_reqs = [req.name for req in self.requirements if not req.check_availability(self, args)]
+                if missing_reqs:
+                    msg = "Not all requirements are fulfilled"
+                    CONSOLE.msg(msg)
+                    raise AbortAction(f"Requirements not met: {', '.join(missing_reqs)}")
 
                 self.execute(args)
 
@@ -449,7 +500,7 @@ class Action:
                 raise InstallerError from e
             except KeyboardInterrupt:
                 CONSOLE.msg("Processing interrupted. The platform might be left in a inconsistent state.")
-                raise AbortAction
+                raise AbortAction("Interrupted by the user")
 
     def get_parser(self, sub_parsers):
         parser = sub_parsers.add_parser(self.args_cmd, parents=self.args_parser_parents)
@@ -618,6 +669,7 @@ class Installer:
     def __init__(self):
         self.parser = argparse.ArgumentParser(description="DataKitchen Installer")
         self.parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
+        self.parser.add_argument("--usage-data", action="store_true", default=True, help="Sends anonymous usage data to Datakitchen")
         self.sub_parsers = self.parser.add_subparsers(help="Products", required=True)
 
     def run(self, def_args):
