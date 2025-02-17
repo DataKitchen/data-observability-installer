@@ -23,6 +23,8 @@ import urllib.request
 import urllib.parse
 import zipfile
 
+from charset_normalizer import detect
+
 #
 # Initial setup
 #
@@ -151,6 +153,11 @@ def get_testgen_volumes(action):
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
 
+def detect_os():
+    current_os = subprocess.check_output("wmic os get Caption", shell=True, text=True)
+    return current_os
+
+
 def do_request(url, method="GET", headers=None, params=None, data=None, verify=True):
     query_params = ""
     if params:
@@ -273,6 +280,9 @@ class Requirement:
     cmd: tuple[str, ...]
 
     def check_availability(self, action, args):
+        if 'Pro' not in detect_os():
+            print("WARNING: Your Windows edition is not compatible with Docker.")
+            show_menu()
         try:
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
         except CommandFailed:
@@ -335,12 +345,7 @@ class Action:
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
-        if platform.system() == 'Windows':
-            output = subprocess.check_output("wmic os get Caption", shell=True, text=True)
-            if "Pro" not in output:
-                print("WARNING: Your Windows edition is not compatible with Docker.")
-                self.show_menu()
-
+        if 'Windows' in detect_os():
             self.data_folder = pathlib.Path.home().joinpath("Documents", "DataKitchenApps")
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
@@ -2040,5 +2045,7 @@ if __name__ == "__main__":
         while not args:
             show_menu()
             args = get_menu_choice()
-
-    installer.run(args)
+    if 'Windows' in detect_os():
+        installer.run(args)
+    else:
+        exit(installer.run(args))
