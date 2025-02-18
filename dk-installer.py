@@ -23,8 +23,6 @@ import urllib.request
 import urllib.parse
 import zipfile
 
-from charset_normalizer import detect
-
 #
 # Initial setup
 #
@@ -2037,15 +2035,17 @@ def get_installer_instance():
 
 if __name__ == "__main__":
     installer = get_installer_instance()
-    args = []
 
-    # Show the menu when running from the windows .exe without arguments
+    # Show the menu when running from the Windows .exe without arguments
     if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
         print("DataKitchen Installer")
-        while not args:
-            show_menu()
-            args = get_menu_choice()
-    if 'Windows' in detect_os():
-        installer.run(args)
-    else:
-        exit(installer.run(args))
+        while True:
+            args = []
+            while not args:
+                show_menu()
+                args = get_menu_choice()
+
+            if 'Windows' in detect_os():
+                installer.run(args)
+            else:
+                exit(installer.run(args))
