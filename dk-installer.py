@@ -152,7 +152,10 @@ def get_testgen_volumes(action):
 
 
 def detect_os():
-    current_os = subprocess.check_output("wmic os get Caption", shell=True, text=True)
+    if platform.system() == 'Windows':
+        current_os = 'Windows'
+    else:
+        current_os = 'Other OS'
     return current_os
 
 
@@ -278,16 +281,20 @@ class Requirement:
     cmd: tuple[str, ...]
 
     def check_availability(self, action, args):
-        if 'Pro' not in detect_os():
-            print("WARNING: Your Windows edition is not compatible with Docker.")
-            show_menu()
         try:
+            if detect_os() == 'Windows':
+                output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
+                if 'Pro' not in output:
+                    raise Exception("WARNING: Your Windows edition is not compatible with Docker.")
+
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
-        except CommandFailed:
-            CONSOLE.msg(f"The installer could not verify that '{self.name}' is available.")
-            return False
-        else:
-            return True
+
+        except Exception as e:
+            if isinstance(e, CommandFailed):
+                CONSOLE.msg(f"The installer could not verify that '{self.name}' is available.")
+            else:
+                print(f"Error: {e}")
+        return False
 
 
 class CommandFailed(Exception):
@@ -343,7 +350,7 @@ class Action:
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
-        if 'Windows' in detect_os():
+        if 'Windows' == detect_os():
             self.data_folder = pathlib.Path.home().joinpath("Documents", "DataKitchenApps")
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
@@ -1952,7 +1959,7 @@ def get_menu_choice():
                 print()
                 action = int(input("Enter your choice (0-6):"))
                 if action == 6:
-                    return []
+                    show_menu()
                 elif action == 1:
                     return ["tg", "install"]
                 elif action == 2:
@@ -1984,7 +1991,7 @@ def get_menu_choice():
                 print()
                 action = int(input("Enter your choice (0-7): "))
                 if action == 7:
-                    return []
+                    show_menu()
                 elif action == 1:
                     return ['obs', 'install']
                 elif action == 2:
@@ -2037,15 +2044,16 @@ if __name__ == "__main__":
     installer = get_installer_instance()
 
     # Show the menu when running from the Windows .exe without arguments
-    if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
-        print("DataKitchen Installer")
-        while True:
-            args = []
-            while not args:
-                show_menu()
-                args = get_menu_choice()
-
-            if 'Windows' in detect_os():
-                installer.run(args)
-            else:
-                exit(installer.run(args))
+if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
+    print("DataKitchen Installer")
+    while True:
+        show_menu()
+        args = get_menu_choice()
+        if args:
+            ret_code = installer.run(args)
+        else:
+            ret_code = 0
+            break
+else:
+    ret_code = installer.run()
+sys.exit(ret_code)
