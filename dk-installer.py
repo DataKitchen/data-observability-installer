@@ -14,6 +14,7 @@ import pathlib
 import platform
 import re
 import secrets
+import ssl
 import string
 import subprocess
 import sys
@@ -153,6 +154,13 @@ def get_testgen_volumes(action):
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
 
+def get_ssl_context():
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    return ssl_context
+
+
 def send_mp_event(event_name, properties):
     payload = {
         "event": event_name,
@@ -169,8 +177,7 @@ def send_mp_event(event_name, properties):
     req = urllib.request.Request(MIXPANEL_URL, data=post_data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
-    urllib.request.urlopen(req)
-
+    urllib.request.urlopen(req, context=get_ssl_context())
 
 
 class StreamIterator:
