@@ -66,7 +66,7 @@ DEFAULT_OBS_MEMORY = 4096
 BASE_API_URL_TPL = "{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
-TESTGEN_LATEST_TAG = "v2"
+TESTGEN_LATEST_TAG = "v3"
 TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
@@ -278,6 +278,8 @@ class Requirement:
                 output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
                 if 'Pro' not in output:
                     CONSOLE.msg("WARNING: Your Windows edition is not compatible with Docker.")
+                    input("Press Enter to exit...")
+                    sys.exit()
 
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
 
@@ -2044,8 +2046,7 @@ if __name__ == "__main__":
     installer = get_installer_instance()
 
     # Show the menu when running from the Windows .exe without arguments
-    #if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
-    if len(sys.argv) == 1:
+    if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
         print("DataKitchen Installer")
         while True:
             show_menu()
