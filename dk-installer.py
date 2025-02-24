@@ -151,14 +151,6 @@ def get_testgen_volumes(action):
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
 
-def detect_os():
-    if platform.system() == 'Windows':
-        current_os = 'Windows'
-    else:
-        current_os = 'Other OS'
-    return current_os
-
-
 def do_request(url, method="GET", headers=None, params=None, data=None, verify=True):
     query_params = ""
     if params:
@@ -282,19 +274,17 @@ class Requirement:
 
     def check_availability(self, action, args):
         try:
-            if detect_os() == 'Windows':
+            if platform.system() == 'Windows':
                 output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
                 if 'Pro' not in output:
-                    raise Exception("WARNING: Your Windows edition is not compatible with Docker.")
+                    CONSOLE.msg("WARNING: Your Windows edition is not compatible with Docker.")
 
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
 
-        except Exception as e:
-            if isinstance(e, CommandFailed):
-                CONSOLE.msg(f"The installer could not verify that '{self.name}' is available.")
-            else:
-                print(f"Error: {e}")
-        return False
+        except CommandFailed:
+            CONSOLE.msg(f"The installer could not verify that '{self.name}' is available.")
+        else:
+            return True
 
 
 class CommandFailed(Exception):
@@ -350,7 +340,7 @@ class Action:
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
-        if 'Windows' == detect_os():
+        if 'Windows' == platform.system():
             self.data_folder = pathlib.Path.home().joinpath("Documents", "DataKitchenApps")
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
@@ -720,6 +710,7 @@ REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "c
 #
 # Action and Steps implementations
 #
+
 
 class DockerNetworkStep(Step):
     label = "Creating a Docker network"
@@ -2053,16 +2044,17 @@ if __name__ == "__main__":
     installer = get_installer_instance()
 
     # Show the menu when running from the Windows .exe without arguments
-if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
-    print("DataKitchen Installer")
-    while True:
-        show_menu()
-        args = get_menu_choice()
-        if args:
-            ret_code = installer.run(args)
-        else:
-            ret_code = 0
-            break
-else:
-    ret_code = installer.run()
-sys.exit(ret_code)
+    #if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
+    if len(sys.argv) == 1:
+        print("DataKitchen Installer")
+        while True:
+            show_menu()
+            args = get_menu_choice()
+            if args:
+                ret_code = installer.run(args)
+            else:
+                ret_code = 0
+                break
+    else:
+        ret_code = installer.run()
+    sys.exit(ret_code)
