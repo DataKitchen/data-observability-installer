@@ -278,8 +278,7 @@ class Requirement:
                 output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
                 if 'Pro' not in output:
                     CONSOLE.msg("WARNING: Your Windows edition is not compatible with Docker.")
-                    input("Press Enter to exit...")
-                    sys.exit()
+                    sys.exit(0)
 
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
 
