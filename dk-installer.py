@@ -274,12 +274,6 @@ class Requirement:
 
     def check_availability(self, action, args):
         try:
-            if platform.system() == 'Windows':
-                output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
-                if 'Pro' not in output:
-                    CONSOLE.msg("WARNING: Your Windows edition is not compatible with Docker.")
-                    sys.exit(0)
-
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
 
         except CommandFailed:
@@ -2047,6 +2041,11 @@ if __name__ == "__main__":
     # Show the menu when running from the Windows .exe without arguments
     if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
         print("DataKitchen Installer")
+
+        output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
+        if 'Pro' not in output:
+            CONSOLE.msg("WARNING: Your Windows edition is not compatible with Docker.")
+
         while True:
             show_menu()
             args = get_menu_choice()
