@@ -335,7 +335,7 @@ class Action:
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
-        if platform.system() == 'Windows':
+        if 'Windows' == platform.system():
             self.data_folder = pathlib.Path.home().joinpath("Documents", "DataKitchenApps")
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
@@ -705,6 +705,7 @@ REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "c
 #
 # Action and Steps implementations
 #
+
 
 class DockerNetworkStep(Step):
     label = "Creating a Docker network"
@@ -1936,7 +1937,7 @@ def get_menu_choice():
             print("")
             if choice == 0:
                 print("Exiting...")
-                exit(0)
+                sys.exit(0)
 
             elif choice == 1:
                 print("\n" + "=" * 30)
@@ -1951,9 +1952,9 @@ def get_menu_choice():
                 print(" 0. Exit                     ")
                 print("=" * 30)
                 print()
-                action = int(input("Enter your choice (0-6): "))
+                action = int(input("Enter your choice (0-6):"))
                 if action == 6:
-                    return []
+                    show_menu()
                 elif action == 1:
                     return ["tg", "install"]
                 elif action == 2:
@@ -1966,7 +1967,7 @@ def get_menu_choice():
                     return ['tg', 'delete-demo']
                 elif action == 0:
                     print("exiting...")
-                    exit(0)
+                    sys.exit(0)
 
             elif choice == 2:
                 print("\n" + "=" * 35)
@@ -1985,7 +1986,7 @@ def get_menu_choice():
                 print()
                 action = int(input("Enter your choice (0-7): "))
                 if action == 7:
-                    return []
+                    show_menu()
                 elif action == 1:
                     return ['obs', 'install']
                 elif action == 2:
@@ -2000,7 +2001,7 @@ def get_menu_choice():
                     return ['obs', 'run-heartbeat-demo']
                 elif action == 0:
                     print("exiting...")
-                    exit(0)
+                    sys.exit(0)
             else:
                 print("Invalid option. Please choose a number between 0 and 7.")
         except ValueError:
@@ -2036,13 +2037,23 @@ def get_installer_instance():
 
 if __name__ == "__main__":
     installer = get_installer_instance()
-    args = []
 
-    # Show the menu when running from the windows .exe without arguments
+    # Show the menu when running from the Windows .exe without arguments
     if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
         print("DataKitchen Installer")
-        while not args:
+
+        output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
+        if 'Pro' not in output:
+            CONSOLE.msg("WARNING: Your Windows edition is not compatible with Docker.")
+
+        while True:
             show_menu()
             args = get_menu_choice()
-
-    exit(installer.run(args))
+            if args:
+                ret_code = installer.run(args)
+            else:
+                ret_code = 0
+                break
+    else:
+        ret_code = installer.run()
+    sys.exit(ret_code)
