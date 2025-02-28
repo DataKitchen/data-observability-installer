@@ -275,9 +275,9 @@ class Requirement:
     def check_availability(self, action, args):
         try:
             action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
-
         except CommandFailed:
             CONSOLE.msg(f"The installer could not verify that '{self.name}' is available.")
+            return False
         else:
             return True
 
