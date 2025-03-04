@@ -343,7 +343,7 @@ class Action:
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
-        if platform.system() == 'Windows':
+        if 'Windows' == platform.system():
             self.data_folder = pathlib.Path.home().joinpath("Documents", "DataKitchenApps")
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
@@ -456,13 +456,12 @@ class Action:
     def _msg_unexpected_error(self):
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
-        CONSOLE.msg("")
+        CONSOLE.space()
         CONSOLE.msg(
             "For assistance, reach out the #support channel on "
             "https://data-observability-slack.datakitchen.io/join, "
             "attaching the logs."
         )
-        CONSOLE.msg("")
 
     def execute_with_log(self, args):
         with (
@@ -700,7 +699,7 @@ class Installer:
         self.parser.add_argument("--usage-data", action="store_true", default=True, help="Sends anonymous usage data to Datakitchen")
         self.sub_parsers = self.parser.add_subparsers(help="Products", required=True)
 
-    def run(self, def_args):
+    def run(self, def_args=None):
         # def_args has to be None to preserve the argparser behavior when only part of the arguments are used
         args = self.parser.parse_args(def_args or None)
 
@@ -726,6 +725,62 @@ class Installer:
 
         for action in actions:
             action.get_parser(prod_sub_parsers)
+
+
+class Menu:
+
+    def __init__(self, callback, name, title=None, width=40):
+        self.callback = callback
+        self.name = name
+        self.title = name if title is None else title
+        self.width = width
+        self.options = []
+
+    def add_option(self, label, *args, **kwargs):
+        self.options.append((label, None, args, kwargs))
+
+    def add_submenu(self, label, menu):
+        self.options.append((label, menu, None, None))
+
+    def _print_option(self, option, label):
+        print(textwrap.fill(label, width=self.width, initial_indent=f" {option:>2}. ", subsequent_indent="     "))
+
+    def run(self, parent=None):
+        while True:
+            print("")
+            print("=" * self.width)
+            print(self.title.center(self.width))
+            print("=" * self.width)
+            for opt, (label, *_) in enumerate(self.options, 1):
+                self._print_option(opt, label)
+            if parent:
+                self._print_option(opt + 1, f"Return to {parent.name} menu")
+            self._print_option(0, "Exit")
+            print("=" * self.width)
+            print("")
+
+            while True:
+                try:
+                    chosen_opt = input("Enter your choice: ")
+                except (KeyboardInterrupt, EOFError):
+                    chosen_opt = "0"
+
+                if chosen_opt in [str(n + 1) for n in range(len(self.options))]:
+                    _, menu, args, kwargs = self.options[int(chosen_opt) - 1]
+                    if menu:
+                        if menu.run(self):
+                            break
+                        else:
+                            return False
+                    else:
+                        self.callback(*args, **kwargs)
+                        break
+                elif parent and chosen_opt == str(len(self.options) + 1):
+                    return True
+                elif chosen_opt in ("0", "q"):
+                    return False
+                elif chosen_opt:
+                    print(f"'{chosen_opt}' is not a valid option.", end=" ")
 
 
 #
@@ -761,9 +816,11 @@ REQ_DOCKER = Requirement("Docker", ("docker", "-v"))
 REQ_DOCKER_DAEMON = Requirement("Docker daemon process", ("docker", "info"))
 REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "compose", "config"))
 
+
 #
 # Action and Steps implementations
 #
+
 
 class DockerNetworkStep(Step):
     label = "Creating a Docker network"
@@ -1977,93 +2034,27 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
 # Entrypoint
 #
 
-def show_menu():
-    print("\n" + "=" * 20)
-    print("  Choose a Product   ")
-    print("=" * 20)
-    print(" 1. TestGen            ")
-    print(" 2. Observability      ")
-    print(" 0. Exit               ")
-    print("=" * 20)
-    print()
 
+def show_menu(installer):
+    tg_menu = Menu(installer.run, "TestGen")
+    tg_menu.add_option("Install TestGen", ["tg", "install"])
+    tg_menu.add_option("Upgrade TestGen", ['tg', 'upgrade'])
+    tg_menu.add_option("Install TestGen demo data", ['tg', 'run-demo'])
+    tg_menu.add_option("Delete TestGen demo data", ['tg', 'delete-demo'])
+    tg_menu.add_option("Uninstall TestGen", ['tg', 'delete'])
 
-def get_menu_choice():
-    while True:
-        try:
-            choice = int(input("Enter your choice (0-2): "))
-            print("")
-            if choice == 0:
-                print("Exiting...")
-                exit(0)
+    obs_menu = Menu(installer.run, "Observability")
+    obs_menu.add_option("Install Observability", ['obs', 'install'])
+    obs_menu.add_option("Upgrade Observability", ['obs', 'upgrade'])
+    obs_menu.add_option("Install Observability demo data", ['obs', 'run-demo'])
+    obs_menu.add_option("Delete Observability demo data", ['obs', 'delete-demo'])
+    obs_menu.add_option("Run heartbeat demo", ['obs', 'run-heartbeat-demo'])
+    obs_menu.add_option("Delete Observability", ['obs', 'delete'])
 
-            elif choice == 1:
-                print("\n" + "=" * 30)
-                print("        TestGen Menu        ")
-                print("=" * 30)
-                print(" 1. Install TestGen          ")
-                print(" 2. Upgrade TestGen          ")
-                print(" 3. Install TestGen demo data")
-                print(" 4. Delete TestGen demo data ")
-                print(" 5. Uninstall TestGen        ")
-                print(" 6. Return to main menu      ")
-                print(" 0. Exit                     ")
-                print("=" * 30)
-                print()
-                action = int(input("Enter your choice (0-6): "))
-                if action == 6:
-                    return []
-                elif action == 1:
-                    return ["tg", "install"]
-                elif action == 2:
-                    return ['tg', 'upgrade']
-                elif action == 5:
-                    return ['tg', 'delete']
-                elif action == 3:
-                    return ['tg', 'run-demo']
-                elif action == 4:
-                    return ['tg', 'delete-demo']
-                elif action == 0:
-                    print("exiting...")
-                    exit(0)
-
-            elif choice == 2:
-                print("\n" + "=" * 35)
-                print("        Observability Menu        ")
-                print("=" * 35)
-                print("You selected Observability.")
-                print("1. Install Observability")
-                print("2. Upgrade Observability")
-                print("3. Install Observability demo data")
-                print("4. Delete Observability demo data")
-                print("5. Run heartbeat demo")
-                print("6. Delete Observability")
-                print("7. Return main menu")
-                print("0. Exit")
-                print("=" * 35)
-                print()
-                action = int(input("Enter your choice (0-7): "))
-                if action == 7:
-                    return []
-                elif action == 1:
-                    return ['obs', 'install']
-                elif action == 2:
-                    return ['obs', 'upgrade']
-                elif action == 6:
-                    return ['obs', 'delete']
-                elif action == 3:
-                    return ['obs', 'run-demo']
-                elif action == 4:
-                    return ['obs', 'delete-demo']
-                elif action == 5:
-                    return ['obs', 'run-heartbeat-demo']
-                elif action == 0:
-                    print("exiting...")
-                    exit(0)
-            else:
-                print("Invalid option. Please choose a number between 0 and 7.")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
+    main_menu = Menu(installer.run, "Main", "DataKitchen Installer")
+    main_menu.add_submenu("TestGen", tg_menu)
+    main_menu.add_submenu("Observability", obs_menu)
+    main_menu.run()
 
 
 def get_installer_instance():
@@ -2095,13 +2086,17 @@ def get_installer_instance():
 
 if __name__ == "__main__":
     installer = get_installer_instance()
-    args = []
 
-    # Show the menu when running from the windows .exe without arguments
+    # Show the menu when running from the Windows .exe without arguments
     if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
-        print("DataKitchen Installer")
-        while not args:
-            show_menu()
-            args = get_menu_choice()
+        try:
+            output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
+        except Exception:
+            pass
+        else:
+            if 'Pro' not in output:
+                print("\nWARNING: Your Windows edition is not compatible with Docker.")
 
-    exit(installer.run(args))
+        show_menu(installer)
+    else:
+        sys.exit(installer.run())
