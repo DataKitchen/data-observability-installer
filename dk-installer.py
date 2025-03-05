@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import contextlib
 import dataclasses
 import datetime
+import functools
+import hashlib
 import ipaddress
 import json
 import logging
@@ -21,6 +24,7 @@ import textwrap
 import time
 import urllib.request
 import urllib.parse
+import uuid
 import zipfile
 
 #
@@ -72,12 +76,15 @@ TESTGEN_PULL_TIMEOUT = 120
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
 
+MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
+MIXPANEL_URL = "https://api.mixpanel.com"
+MIXPANEL_TIMEOUT = 3
+
 LOG = logging.getLogger()
 
 #
 # Utility functions
 #
-
 
 def collect_images_digest(action, images, env=None):
     action.run_cmd(
@@ -151,25 +158,56 @@ def get_testgen_volumes(action):
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
 
-def do_request(url, method="GET", headers=None, params=None, data=None, verify=True):
-    query_params = ""
-    if params:
-        query_params = "?" + urllib.parse.urlencode(params)
-    request = urllib.request.Request(url + query_params, method=method, headers=headers or {})
-    if data:
-        request.data = json.dumps(data).encode()
-        request.add_header("Content-Type", "application/json")
+@functools.cache
+def get_distinct_id():
+    return str(base64.b64encode(hashlib.md5(hex(uuid.getnode()).encode('utf8')).digest()), "utf8")
 
-    ssl_context = None
-    if not verify:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(request, context=ssl_context) as response:
-        try:
-            return json.loads(response.read().decode())
-        except:
-            return {}
+
+@functools.cache
+def get_installer_version():
+    return hashlib.md5(pathlib.Path(__file__).read_bytes()).hexdigest()
+
+
+def get_ssl_context():
+    ssl_context = ssl.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
+    return ssl_context
+
+
+def send_mp_request(endpoint, payload):
+    try:
+        post_data = urllib.parse.urlencode(
+            {"data": base64.b64encode(json.dumps(payload).encode()).decode()}
+        ).encode()
+
+        req = urllib.request.Request(f"{MIXPANEL_URL}/{endpoint}", data=post_data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        urllib.request.urlopen(req, context=get_ssl_context(), timeout=MIXPANEL_TIMEOUT)
+    except Exception:
+        LOG.exception("Failed to send usage data")
+
+
+def send_mp_event(event_name, properties):
+    track_payload = {
+        "event": event_name,
+        "properties": {
+            "token": MIXPANEL_TOKEN,
+            "distinct_id": get_distinct_id(),
+            **properties,
+        }
+    }
+    send_mp_request("track?ip=1", track_payload)
+
+
+def update_mp_profile(properties):
+    engage_payload = {
+        "$token": MIXPANEL_TOKEN,
+        "$distinct_id": get_distinct_id(),
+        "$set": properties,
+    }
+    send_mp_request("engage", engage_payload)
 
 
 class StreamIterator:
@@ -405,14 +443,65 @@ class Action:
                 }
             )
 
+    @contextlib.contextmanager
+    def send_usage_events(self, args):
+
+        start = time.time()
+        error = None
+        event_name = None
+
+        try:
+            yield
+        except AbortAction as e:
+            error = e
+            event_name = "aborted"
+            raise
+        except Exception as e:
+            error = e
+            event_name = "failed"
+            raise
+        else:
+            event_name = f"{args.prod}-{self.args_cmd}"
+        finally:
+            if args.usage_data:
+                properties = {
+                    "prod": args.prod,
+                    "action": self.args_cmd,
+                    "elapsed": time.time() - start,
+                    "os_version": platform.release(),
+                    "os_arch": platform.machine(),
+                    "$os": platform.system(),
+                    "python_info": f"{platform.python_implementation()} {platform.python_version()}",
+                    "installer_version": get_installer_version(),
+                }
+
+                error_chain = []
+                while error is not None:
+                    error_chain.append(f"{error.__class__.__name__}: {error}")
+                    error = error.__cause__
+                if error_chain:
+                    properties["error"] = " caused by ".join(error_chain)
+
+                send_mp_event(event_name, properties)
+                update_mp_profile({})
+
+
     def _msg_unexpected_error(self):
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
         CONSOLE.space()
-        CONSOLE.msg("For assistance, reach out the #support channel on https://data-observability-slack.datakitchen.io/join, attaching the logs.")
+        CONSOLE.msg(
+            "For assistance, reach out the #support channel on "
+            "https://data-observability-slack.datakitchen.io/join, "
+            "attaching the logs."
+        )
 
     def execute_with_log(self, args):
-        with self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"), self.configure_logging(debug=args.debug):
+        with (
+            self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"),
+            self.configure_logging(debug=args.debug),
+            self.send_usage_events(args)
+        ):
             # Collecting basic system information for troubleshooting
             LOG.info(
                 "System info: %s | %s",
@@ -429,11 +518,17 @@ class Action:
                 platform.python_implementation(),
                 platform.python_version(),
             )
+            LOG.info(
+                "Installer version: %s",
+                get_installer_version()
+            )
 
             try:
-                if not all((req.check_availability(self, args) for req in self.requirements)):
-                    CONSOLE.msg("Not all requirements are fulfilled")
-                    raise AbortAction
+                missing_reqs = [req.name for req in self.requirements if not req.check_availability(self, args)]
+                if missing_reqs:
+                    msg = "Not all requirements are fulfilled"
+                    CONSOLE.msg(msg)
+                    raise AbortAction(f"Requirements not met: {', '.join(missing_reqs)}")
 
                 self.execute(args)
 
@@ -446,9 +541,10 @@ class Action:
                 LOG.exception("Uncaught error: %r", e)
                 self._msg_unexpected_error()
                 raise InstallerError from e
-            except KeyboardInterrupt:
-                CONSOLE.msg("Processing interrupted. The platform might be left in a inconsistent state.")
-                raise AbortAction
+            except KeyboardInterrupt as e:
+                CONSOLE.space()
+                CONSOLE.msg("Processing interrupted. This may result in an inconsistent platform state.")
+                raise AbortAction from e
 
     def get_parser(self, sub_parsers):
         parser = sub_parsers.add_parser(self.args_cmd, parents=self.args_parser_parents)
@@ -581,11 +677,12 @@ class MultiStepAction(Action):
             try:
                 LOG.debug("Running step [%s] pre-execute", step)
                 step.pre_execute(self, args)
-            except InstallerError:
-                raise
+            except InstallerError as e:
+                LOG.info("Step [%s] pre-execute failed", step)
+                raise e.__class__(f"Failed step pre-execute: {step.__class__.__name__}") from e
             except Exception as e:
                 LOG.exception("Step [%s] pre-execute failed", step)
-                raise InstallerError from e
+                raise InstallerError(f"Failed step: {step.__class__.__name__}") from e
 
         CONSOLE.space()
         if self.intro_text:
@@ -593,6 +690,7 @@ class MultiStepAction(Action):
         CONSOLE.space()
         executed_steps: list[Step] = []
         action_fail_exception = None
+        action_fail_step = None
         for step in self.steps:
             executed_steps.append(step)
             with CONSOLE:
@@ -609,6 +707,7 @@ class MultiStepAction(Action):
                     CONSOLE.send("FAILED")
                     if step.required:
                         action_fail_exception = e
+                        action_fail_step = step
                     else:
                         LOG.warning(f"Non-required step [%s] failed with: %s", step, e)
                 else:
@@ -631,13 +730,18 @@ class MultiStepAction(Action):
                 LOG.exception("Post-execution of step [%s] failed", step)
 
         if action_fail_exception:
-            raise action_fail_exception
+            raise action_fail_exception.__class__(
+                f"Failed step: {action_fail_step.__class__.__name__}"
+            ) from action_fail_exception
 
 
 class Installer:
     def __init__(self):
         self.parser = argparse.ArgumentParser(description="DataKitchen Installer")
         self.parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
+        self.parser.add_argument(
+            "--no-usage-data", default=True, dest="usage_data", action="store_false", help="Disable sending anonymous usage data to Datakitchen"
+        )
         self.sub_parsers = self.parser.add_subparsers(help="Products", required=True)
 
     def run(self, def_args=None):
@@ -1234,7 +1338,7 @@ class ObsExposeAction(Action):
 
             CONSOLE.msg("The services are no longer exposed.")
 
-        except Exception:
+        except Exception as e:
             LOG.exception("Something went wrong exposing the services ports")
             CONSOLE.space()
             CONSOLE.msg("The platform could not have its ports exposed.")
@@ -1245,7 +1349,7 @@ class ObsExposeAction(Action):
             CONSOLE.msg(
                 f"If port {args.port} is in use, use the command option --port to specify an alternate value."
             )
-            raise AbortAction
+            raise AbortAction from e
 
 
 class ObsDeleteAction(Action):
@@ -1977,14 +2081,27 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
 
 
 def show_menu(installer):
-    tg_menu = Menu(installer.run, "TestGen")
+
+    cfg_options = {}
+
+    def add_config(key, value):
+        cfg_options[key] = value
+
+    def run_installer(args):
+        cfg_args = args[:]
+        for value in cfg_options.values():
+            if value is not None:
+                cfg_args.insert(0, value)
+        installer.run(cfg_args)
+
+    tg_menu = Menu(run_installer, "TestGen")
     tg_menu.add_option("Install TestGen", ["tg", "install"])
     tg_menu.add_option("Upgrade TestGen", ['tg', 'upgrade'])
     tg_menu.add_option("Install TestGen demo data", ['tg', 'run-demo'])
     tg_menu.add_option("Delete TestGen demo data", ['tg', 'delete-demo'])
     tg_menu.add_option("Uninstall TestGen", ['tg', 'delete'])
 
-    obs_menu = Menu(installer.run, "Observability")
+    obs_menu = Menu(run_installer, "Observability")
     obs_menu.add_option("Install Observability", ['obs', 'install'])
     obs_menu.add_option("Upgrade Observability", ['obs', 'upgrade'])
     obs_menu.add_option("Install Observability demo data", ['obs', 'run-demo'])
@@ -1992,9 +2109,14 @@ def show_menu(installer):
     obs_menu.add_option("Run heartbeat demo", ['obs', 'run-heartbeat-demo'])
     obs_menu.add_option("Delete Observability", ['obs', 'delete'])
 
-    main_menu = Menu(installer.run, "Main", "DataKitchen Installer")
+    cfg_menu = Menu(add_config, "Configuration")
+    cfg_menu.add_option("Disable sending usage data", key="usage_data", value="--no-usage-data")
+    cfg_menu.add_option("Enable sending usage data", key="usage_data", value=None)
+
+    main_menu = Menu(None, "Main", "DataKitchen Installer")
     main_menu.add_submenu("TestGen", tg_menu)
     main_menu.add_submenu("Observability", obs_menu)
+    main_menu.add_submenu("Installer Configuration", cfg_menu)
     main_menu.run()
 
 
