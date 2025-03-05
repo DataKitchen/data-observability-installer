@@ -475,12 +475,12 @@ class Action:
                     "installer_version": get_installer_version(),
                 }
 
+                error_chain = []
                 while error is not None:
-                    if error_str := str(error):
-                        properties["error"] = error_str
-                        break
-                    else:
-                        error = error.__cause__
+                    error_chain.append(f"{error.__class__.__name__}: {error}")
+                    error = error.__cause__
+                if error_chain:
+                    properties["error"] = " caused by ".join(error_chain)
 
                 send_mp_event(event_name, properties)
                 update_mp_profile({})
@@ -541,9 +541,10 @@ class Action:
                 LOG.exception("Uncaught error: %r", e)
                 self._msg_unexpected_error()
                 raise InstallerError from e
-            except KeyboardInterrupt:
-                CONSOLE.msg("Processing interrupted. The platform might be left in a inconsistent state.")
-                raise AbortAction("Interrupted by the user")
+            except KeyboardInterrupt as e:
+                CONSOLE.space()
+                CONSOLE.msg("Processing interrupted. This may result in an inconsistent platform state.")
+                raise AbortAction from e
 
     def get_parser(self, sub_parsers):
         parser = sub_parsers.add_parser(self.args_cmd, parents=self.args_parser_parents)
@@ -676,11 +677,12 @@ class MultiStepAction(Action):
             try:
                 LOG.debug("Running step [%s] pre-execute", step)
                 step.pre_execute(self, args)
-            except InstallerError:
-                raise
+            except InstallerError as e:
+                LOG.info("Step [%s] pre-execute failed", step)
+                raise e.__class__(f"Failed step pre-execute: {step.__class__.__name__}") from e
             except Exception as e:
                 LOG.exception("Step [%s] pre-execute failed", step)
-                raise InstallerError from e
+                raise InstallerError(f"Failed step: {step.__class__.__name__}") from e
 
         CONSOLE.space()
         if self.intro_text:
@@ -688,6 +690,7 @@ class MultiStepAction(Action):
         CONSOLE.space()
         executed_steps: list[Step] = []
         action_fail_exception = None
+        action_fail_step = None
         for step in self.steps:
             executed_steps.append(step)
             with CONSOLE:
@@ -704,6 +707,7 @@ class MultiStepAction(Action):
                     CONSOLE.send("FAILED")
                     if step.required:
                         action_fail_exception = e
+                        action_fail_step = step
                     else:
                         LOG.warning(f"Non-required step [%s] failed with: %s", step, e)
                 else:
@@ -726,7 +730,9 @@ class MultiStepAction(Action):
                 LOG.exception("Post-execution of step [%s] failed", step)
 
         if action_fail_exception:
-            raise action_fail_exception
+            raise action_fail_exception.__class__(
+                f"Failed step: {action_fail_step.__class__.__name__}"
+            ) from action_fail_exception
 
 
 class Installer:
@@ -1332,7 +1338,7 @@ class ObsExposeAction(Action):
 
             CONSOLE.msg("The services are no longer exposed.")
 
-        except Exception:
+        except Exception as e:
             LOG.exception("Something went wrong exposing the services ports")
             CONSOLE.space()
             CONSOLE.msg("The platform could not have its ports exposed.")
@@ -1343,7 +1349,7 @@ class ObsExposeAction(Action):
             CONSOLE.msg(
                 f"If port {args.port} is in use, use the command option --port to specify an alternate value."
             )
-            raise AbortAction
+            raise AbortAction from e
 
 
 class ObsDeleteAction(Action):
