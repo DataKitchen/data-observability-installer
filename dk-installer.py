@@ -680,6 +680,11 @@ class MultiStepAction(Action):
     title: str = ""
     intro_text: list[str] = []
 
+    def _print_intro_text(self, args):
+        CONSOLE.space()
+        for line in self.intro_text:
+            CONSOLE.msg(line)
+
     def execute(self, args):
         CONSOLE.title(self.title)
         for step in self.steps:
@@ -693,9 +698,7 @@ class MultiStepAction(Action):
                 LOG.exception("Step [%s] pre-execute failed", step)
                 raise InstallerError(f"Failed step: {step.__class__.__name__}") from e
 
-        CONSOLE.space()
-        for line in self.intro_text:
-            CONSOLE.msg(line)
+        self._print_intro_text(args)
         CONSOLE.space()
         executed_steps: list[Step] = []
         action_fail_exception = None
@@ -875,11 +878,22 @@ REQ_DOCKER_DAEMON = Requirement("Docker daemon process", ("docker", "info"))
 REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "compose", "config"))
 
 
-ANALYTICS_DISCLAIMER = [
-    "DataKitchen has enabled anonymous aggregate user behavior analytics.",
-    "Read the analytics documentation (and how to opt-out) here:",
-    "https://docs.datakitchen.io/articles/#!project-datakitchen-help/anonymous-analytics",
-]
+class AnalyticsMultiStepAction(MultiStepAction):
+
+    ANALYTICS_DISCLAIMER = [
+        "DataKitchen has enabled anonymous aggregate user behavior analytics.",
+        "Read the analytics documentation (and how to opt-out) here:",
+        "https://docs.datakitchen.io/articles/#!datakitchen-resources/anonymous-analytics",
+    ]
+
+    def _print_intro_text(self, args):
+        super()._print_intro_text(args)
+
+        if args.send_analytics_data:
+            CONSOLE.space()
+            for line in self.ANALYTICS_DISCLAIMER:
+                CONSOLE.msg(line)
+
 
 #
 # Action and Steps implementations
@@ -1207,7 +1221,7 @@ class ObsGenerateDemoConfigStep(Step):
                 file.write(json.dumps(config))
 
 
-class ObsInstallAction(MultiStepAction):
+class ObsInstallAction(AnalyticsMultiStepAction):
     steps = [
         DockerNetworkStep(),
         MinikubeProfileStep(),
@@ -1220,10 +1234,7 @@ class ObsInstallAction(MultiStepAction):
 
     label = "Installation"
     title = "Install Observability"
-    intro_text = [
-        "This process may take 5~30 minutes depending on your system resources and network speed.",
-        *ANALYTICS_DISCLAIMER
-    ]
+    intro_text = ["This process may take 5~30 minutes depending on your system resources and network speed."]
 
     args_cmd = "install"
     args_parser_parents = [minikube_parser]
@@ -1825,7 +1836,7 @@ class TestgenActionMixin:
         return self.data_folder.joinpath(DOCKER_COMPOSE_FILE)
 
 
-class TestgenInstallAction(MultiStepAction, TestgenActionMixin):
+class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
     steps = [
         TestGenVerifyExistingInstallStep(),
         DockerNetworkStep(),
@@ -1838,10 +1849,7 @@ class TestgenInstallAction(MultiStepAction, TestgenActionMixin):
 
     label = "Installation"
     title = "Install TestGen"
-    intro_text = [
-        "This process may take 5~10 minutes depending on your system resources and network speed.",
-        *ANALYTICS_DISCLAIMER,
-    ]
+    intro_text = ["This process may take 5~10 minutes depending on your system resources and network speed."]
 
     args_cmd = "install"
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
@@ -1883,7 +1891,7 @@ class TestgenInstallAction(MultiStepAction, TestgenActionMixin):
         return parser
 
 
-class TestgenUpgradeAction(MultiStepAction, TestgenActionMixin):
+class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
     steps = [
         TestGenVerifyVersionStep(),
         TestGenStopStep(),
@@ -1894,10 +1902,7 @@ class TestgenUpgradeAction(MultiStepAction, TestgenActionMixin):
 
     label = "Upgrade"
     title = "Upgrade TestGen"
-    intro_text = [
-        "This process may take 5~10 minutes depending on your system resources and network speed.",
-        *ANALYTICS_DISCLAIMER,
-    ]
+    intro_text = ["This process may take 5~10 minutes depending on your system resources and network speed."]
 
     args_cmd = "upgrade"
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_CONFIG]
