@@ -32,7 +32,7 @@ import zipfile
 #
 
 MINIKUBE_PROFILE = "dk-observability"
-MINIKUBE_KUBE_VER = "v1.29"
+MINIKUBE_KUBE_VER = "v1.32.0"
 NAMESPACE = "datakitchen"
 HELM_REPOS = (("datakitchen", "https://datakitchen.github.io/dataops-observability/"),)
 HELM_SERVICES = (
