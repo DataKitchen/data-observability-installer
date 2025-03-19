@@ -60,7 +60,6 @@ And it allows you to <b>make fast, safe development changes</b>.
 |-------------------------|-------------------------|-------------------------------|
 | [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.33, 1.34, 1.35                | `minikube version`                |
 | [Helm](https://helm.sh/docs/intro/install/)            | 3.13, 3.14        | `helm version`         |
-| Minikube Driver <br/>- macOS on Intel chip: [HyperKit](https://minikube.sigs.k8s.io/docs/drivers/hyperkit/) <br/>- Other operating systems: [Docker](https://minikube.sigs.k8s.io/docs/drivers/docker/) | <br/>0.20210107 <br/> 25.0, 26.1, 27.5             | <br/>`hyperkit -v` <br/>`docker -v`         |
 
 ### Download the installer
 

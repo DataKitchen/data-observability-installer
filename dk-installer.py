@@ -104,13 +104,6 @@ def collect_images_digest(action, images, env=None):
     )
 
 
-def get_recommended_minikube_driver():
-    if platform.system() == "Darwin" and platform.processor() == "i386":
-        return "hyperkit"
-    else:
-        return "docker"
-
-
 def collect_user_input(fields: list[str]) -> dict[str, str]:
     res = {}
     CONSOLE.space()
@@ -1263,7 +1256,7 @@ class ObsInstallAction(AnalyticsMultiStepAction):
             "--driver",
             type=str,
             action="store",
-            default=get_recommended_minikube_driver(),
+            default="docker",
             help="Minikube driver to be used. Defaults to '%(default)s'",
         )
         parser.add_argument(
