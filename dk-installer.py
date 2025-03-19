@@ -72,7 +72,7 @@ CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
 TESTGEN_LATEST_TAG = "v3"
 TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
-TESTGEN_PULL_TIMEOUT = 120
+TESTGEN_PULL_TIMEOUT = 5
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
 
@@ -1705,6 +1705,8 @@ class TestGenPullImagesStep(Step):
     label = "Pulling docker images"
 
     def execute(self, action, args):
+        action.additional_analytics["pull_timeout"] = args.pull_timeout
+
         try:
             action.run_cmd_retries(
                 "docker",
@@ -1714,7 +1716,7 @@ class TestGenPullImagesStep(Step):
                 "pull",
                 "--policy",
                 "always",
-                timeout=TESTGEN_PULL_TIMEOUT,
+                timeout=args.pull_timeout * 60,
                 retries=TESTGEN_PULL_RETRIES,
             )
         except CommandFailed:
@@ -1873,6 +1875,16 @@ class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
             action="store",
             default=TESTGEN_DEFAULT_IMAGE,
             help="TestGen image to use for the install. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--pull-timeout",
+            type=int,
+            action="store",
+            default=TESTGEN_PULL_TIMEOUT,
+            help=(
+                "Maximum amount of time in minutes that Docker will be allowed to pull the images. "
+                "Defaults to '%(default)s'"
+            ),
         )
         parser.add_argument(
             "--ssl-cert-file",
