@@ -72,7 +72,7 @@ CREDENTIALS_FILE = "dk-{}-credentials.txt"
 TESTGEN_COMPOSE_NAME = "testgen"
 TESTGEN_LATEST_TAG = "v3"
 TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
-TESTGEN_PULL_TIMEOUT = 120
+TESTGEN_PULL_TIMEOUT = 5
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
 
@@ -102,13 +102,6 @@ def collect_images_digest(action, images, env=None):
         raise_on_non_zero=False,
         env=env,
     )
-
-
-def get_recommended_minikube_driver():
-    if platform.system() == "Darwin" and platform.processor() == "i386":
-        return "hyperkit"
-    else:
-        return "docker"
 
 
 def collect_user_input(fields: list[str]) -> dict[str, str]:
@@ -1263,7 +1256,7 @@ class ObsInstallAction(AnalyticsMultiStepAction):
             "--driver",
             type=str,
             action="store",
-            default=get_recommended_minikube_driver(),
+            default="docker",
             help="Minikube driver to be used. Defaults to '%(default)s'",
         )
         parser.add_argument(
@@ -1705,6 +1698,8 @@ class TestGenPullImagesStep(Step):
     label = "Pulling docker images"
 
     def execute(self, action, args):
+        action.additional_analytics["pull_timeout"] = args.pull_timeout
+
         try:
             action.run_cmd_retries(
                 "docker",
@@ -1714,7 +1709,7 @@ class TestGenPullImagesStep(Step):
                 "pull",
                 "--policy",
                 "always",
-                timeout=TESTGEN_PULL_TIMEOUT,
+                timeout=args.pull_timeout * 60,
                 retries=TESTGEN_PULL_RETRIES,
             )
         except CommandFailed:
@@ -1873,6 +1868,16 @@ class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
             action="store",
             default=TESTGEN_DEFAULT_IMAGE,
             help="TestGen image to use for the install. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--pull-timeout",
+            type=int,
+            action="store",
+            default=TESTGEN_PULL_TIMEOUT,
+            help=(
+                "Maximum amount of time in minutes that Docker will be allowed to pull the images. "
+                "Defaults to '%(default)s'"
+            ),
         )
         parser.add_argument(
             "--ssl-cert-file",
