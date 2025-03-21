@@ -13,7 +13,9 @@ import logging
 import logging.config
 import os
 import pathlib
+import pdb
 import platform
+import random
 import re
 import secrets
 import ssl
@@ -24,7 +26,6 @@ import textwrap
 import time
 import urllib.request
 import urllib.parse
-import uuid
 import zipfile
 
 #
@@ -79,6 +80,7 @@ TESTGEN_DEFAULT_PORT = 8501
 MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
 MIXPANEL_URL = "https://api.mixpanel.com"
 MIXPANEL_TIMEOUT = 3
+INSTANCE_ID_FILE = "instance.txt"
 
 DEFAULT_USER_DATA = {
     "name": "Admin",
@@ -156,59 +158,10 @@ def get_testgen_volumes(action):
     volumes = action.run_cmd("docker", "volume", "list", "--format=json", capture_json_lines=True)
     return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
-def _hash_value(value: bytes | str, digest_size: int = 8) -> str:
-    if isinstance(value, str):
-        value = value.encode()
-    return hashlib.blake2b(value, salt=get_instance_id().encode(), digest_size=digest_size).hexdigest()
-
-
-@functools.cache
-def get_distinct_id():
-    return _hash_value(DEFAULT_USER_DATA["username"])
-
-
-@functools.cache
-def get_instance_id():
-    return hashlib.blake2b(uuid.getnode().to_bytes(length=8), digest_size=8).hexdigest()
-
 
 @functools.cache
 def get_installer_version():
     return hashlib.md5(pathlib.Path(__file__).read_bytes()).hexdigest()
-
-
-def get_ssl_context():
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-    return ssl_context
-
-
-def send_mp_request(endpoint, payload):
-    try:
-        post_data = urllib.parse.urlencode(
-            {"data": base64.b64encode(json.dumps(payload).encode()).decode()}
-        ).encode()
-
-        req = urllib.request.Request(f"{MIXPANEL_URL}/{endpoint}", data=post_data, method="POST")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
-
-        urllib.request.urlopen(req, context=get_ssl_context(), timeout=MIXPANEL_TIMEOUT)
-    except Exception:
-        LOG.exception("Failed to send analytics data")
-
-
-def send_mp_event(event_name, properties):
-    track_payload = {
-        "event": event_name,
-        "properties": {
-            "token": MIXPANEL_TOKEN,
-            "distinct_id": get_distinct_id(),
-            "instance_id": get_instance_id(),
-            **properties,
-        }
-    }
-    send_mp_request("track?ip=1", track_payload)
 
 
 class StreamIterator:
@@ -346,34 +299,108 @@ class SkipStep(Exception):
     """Should be raised when a given Step does not need to be executed."""
 
 
-class Step:
-    required: bool = True
-    label = None
+class AnalyticsWrapper:
 
-    def pre_execute(self, action, args):
-        pass
+    def __init__(self, action, args):
+        self.action = action
+        self.args = args
 
-    def execute(self, action, args):
-        pass
+    def _hash_value(self, value: bytes | str, digest_size: int = 8) -> str:
+        if isinstance(value, str):
+            value = value.encode()
+        return hashlib.blake2b(value, salt=self.get_instance_id().encode(), digest_size=digest_size).hexdigest()
 
-    def on_action_success(self, action, args):
-        pass
+    @functools.cache
+    def get_distinct_id(self):
+        return self._hash_value(DEFAULT_USER_DATA["username"])
 
-    def on_action_fail(self, action, args):
-        pass
+    @functools.cache
+    def get_instance_id(self):
+        instance_id_file = self.action.logs_folder / INSTANCE_ID_FILE
+        try:
+            return instance_id_file.read_text().strip()
+        except FileNotFoundError:
+            instance_id = random.randbytes(8).hex()
+            instance_id_file.write_text(f"{instance_id}\n")
+        return instance_id
 
-    def __str__(self):
-        return self.label or self.__name__
+    def __enter__(self):
+        self._start = time.time()
+        self.additional_properties = {}
+        self.action.analytics = self
 
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            event_name = f"{self.args.prod}-{self.action.args_cmd}"
+        elif exc_type is AbortAction:
+            event_name = "aborted"
+        else:
+            event_name = "failed"
+
+        if self.args.send_analytics_data:
+            properties = {
+                "prod": self.args.prod,
+                "action": self.action.args_cmd,
+                "elapsed": time.time() - self._start,
+                "os_version": platform.release(),
+                "os_arch": platform.machine(),
+                "$os": platform.system(),
+                "python_info": f"{platform.python_implementation()} {platform.python_version()}",
+                "installer_version": get_installer_version(),
+                "distinct_id": self.get_distinct_id(),
+                "instance_id": self.get_instance_id(),
+                **self.additional_properties
+            }
+
+            error_chain = []
+            while exc_val is not None:
+                error_chain.append(f"{exc_type.__name__}: {exc_val}")
+                exc_val = exc_val.__cause__
+            if error_chain:
+                properties["error"] = " caused by ".join(error_chain)
+
+            self.send_mp_event(event_name, properties)
+
+        return False
+
+    def get_ssl_context(self):
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        return ssl_context
+
+    def send_mp_request(self, endpoint, payload):
+        post_data = urllib.parse.urlencode(
+            {"data": base64.b64encode(json.dumps(payload).encode()).decode()}
+        ).encode()
+
+        req = urllib.request.Request(f"{MIXPANEL_URL}/{endpoint}", data=post_data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        resp = urllib.request.urlopen(req, context=self.get_ssl_context(), timeout=MIXPANEL_TIMEOUT)
+        if resp.code != 200:
+            raise Exception(resp.reason)
+
+    def send_mp_event(self, event_name, properties):
+        track_payload = {
+            "event": event_name,
+            "properties": {
+                "token": MIXPANEL_TOKEN,
+                **properties,
+            }
+        }
+        try:
+            self.send_mp_request("track?ip=1", track_payload)
+        except Exception as e:
+            LOG.debug(f"Failed to send analytics event '%s': %s", event_name, e)
+        else:
+            LOG.debug("Sent analytics event '%s' with properties %s", event_name, properties.keys())
 
 class Action:
     _cmd_idx: int = 0
     args_cmd: str
     args_parser_parents: list = []
     requirements: list = []
-
-    def __init__(self):
-        self.additional_analytics: dict = {}
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
@@ -447,47 +474,6 @@ class Action:
                 }
             )
 
-    @contextlib.contextmanager
-    def send_analytics_events(self, args):
-        start = time.time()
-        error = None
-        event_name = None
-
-        try:
-            yield
-        except AbortAction as e:
-            error = e
-            event_name = "aborted"
-            raise
-        except Exception as e:
-            error = e
-            event_name = "failed"
-            raise
-        else:
-            event_name = f"{args.prod}-{self.args_cmd}"
-        finally:
-            if args.send_analytics_data:
-                properties = {
-                    "prod": args.prod,
-                    "action": self.args_cmd,
-                    "elapsed": time.time() - start,
-                    "os_version": platform.release(),
-                    "os_arch": platform.machine(),
-                    "$os": platform.system(),
-                    "python_info": f"{platform.python_implementation()} {platform.python_version()}",
-                    "installer_version": get_installer_version(),
-                    **self.additional_analytics
-                }
-
-                error_chain = []
-                while error is not None:
-                    error_chain.append(f"{error.__class__.__name__}: {error}")
-                    error = error.__cause__
-                if error_chain:
-                    properties["error"] = " caused by ".join(error_chain)
-
-                send_mp_event(event_name, properties)
-
     def _msg_unexpected_error(self):
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
@@ -502,7 +488,7 @@ class Action:
         with (
             self.init_session_folder(prefix=f"{args.prod}-{self.args_cmd}"),
             self.configure_logging(debug=args.debug),
-            self.send_analytics_events(args)
+            AnalyticsWrapper(self, args),
         ):
             # Collecting basic system information for troubleshooting
             LOG.info(
@@ -528,7 +514,7 @@ class Action:
             try:
                 missing_reqs = [req.name for req in self.requirements if not req.check_availability(self, args)]
                 if missing_reqs:
-                    self.additional_analytics["missing_requirements"] = missing_reqs
+                    self.analytics.additional_properties["missing_requirements"] = missing_reqs
                     CONSOLE.msg("Not all requirements are fulfilled")
                     raise AbortAction
 
@@ -667,6 +653,26 @@ class Action:
             )
 
 
+class Step:
+    required: bool = True
+    label = None
+
+    def pre_execute(self, action, args):
+        pass
+
+    def execute(self, action, args):
+        pass
+
+    def on_action_success(self, action, args):
+        pass
+
+    def on_action_fail(self, action, args):
+        pass
+
+    def __str__(self):
+        return self.label or self.__name__
+
+
 class MultiStepAction(Action):
     steps: list[Step]
     label: str = "Process"
@@ -768,6 +774,8 @@ class Installer:
         except AbortAction:
             return 1
         except Exception:
+            if args.debug:
+                pdb.post_mortem()
             return 2
         else:
             return 0
@@ -953,8 +961,8 @@ class MinikubeProfileStep(Step):
 
     def execute(self, action, args):
 
-        action.additional_analytics["minikube_mem"] = args.memory
-        action.additional_analytics["minikube_driver"] = args.driver
+        action.analytics.additional_properties["minikube_mem"] = args.memory
+        action.analytics.additional_properties["minikube_driver"] = args.driver
 
         action.run_cmd(
             "minikube",
@@ -999,7 +1007,7 @@ class HelmInstallStep(Step):
     values_arg: str = None
 
     def execute(self, action, args):
-        action.additional_analytics["helm_timeout"] = args.helm_timeout
+        action.analytics.additional_properties["helm_timeout"] = args.helm_timeout
 
         release, chart_ref = self.chart_info
         values_file = getattr(args, self.values_arg) if self.values_arg else None
@@ -1489,50 +1497,82 @@ class TestGenVerifyExistingInstallStep(Step):
             raise AbortAction
 
 
-class TestGenVerifyVersionStep(Step):
-    label = "Verifying latest version"
+class UpdateComposeFileStep(Step):
+    label = "Updating the Docker compose file"
+
+    def __init__(self):
+        self.update_version = None
+        self.update_analytics = False
+        super().__init__()
 
     def pre_execute(self, action, args):
 
-        action.additional_analytics["version_verify_skipped"] = args.skip_verify
+        action.analytics.additional_properties["version_verify_skipped"] = args.skip_verify
 
-        if args.skip_verify:
-            return
-        try:
-            output = action.run_cmd(
-                "docker",
-                "compose",
-                "-f",
-                action.docker_compose_file_path,
-                "exec",
-                "engine",
-                "testgen",
-                "--help",
-                capture_text=True,
-            )
-            match = re.search(r"This version:(.*)\s+Latest version:(.*)\s", output)
-            current_version = match.group(1)
-            latest_version = match.group(2)
-        except Exception:
-            CONSOLE.msg(f"Current version: unknown")
-            CONSOLE.msg(f"Latest version: unknown")
-            pass
+        CONSOLE.space()
+
+        if not args.skip_verify:
+            try:
+                output = action.run_cmd(
+                    "docker",
+                    "compose",
+                    "-f",
+                    action.docker_compose_file_path,
+                    "exec",
+                    "engine",
+                    "testgen",
+                    "--help",
+                    capture_text=True,
+                )
+                match = re.search(r"This version:(.*)\s+Latest version:(.*)\s", output)
+                current_version = match.group(1)
+                latest_version = match.group(2)
+            except Exception:
+                CONSOLE.msg(f"Current version: unknown")
+                CONSOLE.msg(f"Latest version: unknown")
+                pass
+            else:
+                CONSOLE.msg(f"Current version: {current_version}")
+                CONSOLE.msg(f"Latest version: {latest_version}")
+
+                if current_version != latest_version:
+                    self.update_version = latest_version
+                else:
+                    CONSOLE.msg("Application is already up-to-date.")
+
+        contents = action.docker_compose_file_path.read_text()
+        if args.send_analytics_data:
+            self.update_analytics = "TG_INSTANCE_ID" not in contents
         else:
-            CONSOLE.msg(f"Current version: {current_version}")
-            CONSOLE.msg(f"Latest version: {latest_version}")
+            if not re.findall(r"TG_ANALYTICS:\s*off", contents):
+                self.update_analytics = True
+                CONSOLE.msg("Analytics will be disabled.")
 
-            if current_version == latest_version:
-                CONSOLE.space()
-                CONSOLE.msg("Application is already up-to-date.")
-                raise AbortAction
+        if not self.update_version and not self.update_analytics:
+            CONSOLE.msg("No changes will be applied.")
+            raise AbortAction
 
     def execute(self, action, args):
-        if args.skip_verify:
+        if not self.update_version and not self.update_analytics:
             raise SkipStep
         
         contents = action.docker_compose_file_path.read_text()
-        new_contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_LATEST_TAG}\n", contents)
-        action.docker_compose_file_path.write_text(new_contents)
+        if self.update_version:
+            contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_LATEST_TAG}\n", contents)
+        if self.update_analytics:
+            if args.send_analytics_data:
+                if "TG_INSTANCE_ID" not in contents:
+                    match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
+                    var = f"\n{match.group(1)}TG_INSTANCE_ID: {action.analytics.get_instance_id()}"
+                    contents = contents[0:match.end()] + match.group(1) + var + contents[match.end():]
+            else:
+                if "TG_ANALYTICS" in contents:
+                    contents = re.sub(r"^(\s*TG_ANALYTICS:).*$", r"\1 no", contents, flags=re.M)
+                else:
+                    match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
+                    contents = contents[0:match.end()] + match.group(1) + f"\n{match.group(1)}TG_ANALYTICS: no" + contents[match.end():]
+
+        action.docker_compose_file_path.write_text(contents)
 
 
 class TestGenCreateDockerComposeFileStep(Step):
@@ -1563,9 +1603,9 @@ class TestGenCreateDockerComposeFileStep(Step):
 
     def execute(self, action, args):
 
-        action.additional_analytics["used_custom_cert"] = args.ssl_cert_file and args.ssl_key_file
-        action.additional_analytics["existing_compose_file"] = action.using_existing
-        action.additional_analytics["used_custom_image"] = bool(args.image)
+        action.analytics.additional_properties["used_custom_cert"] = args.ssl_cert_file and args.ssl_key_file
+        action.analytics.additional_properties["existing_compose_file"] = action.using_existing
+        action.analytics.additional_properties["used_custom_image"] = bool(args.image)
 
         if action.using_existing:
             LOG.info("Re-using existing [%s]", action.docker_compose_file_path)
@@ -1573,10 +1613,9 @@ class TestGenCreateDockerComposeFileStep(Step):
             LOG.info("Creating [%s] for image [%s]", action.docker_compose_file_path, args.image)
             self.create_compose_file(
                 action,
+                args,
                 self.username,
                 self.password,
-                args.port,
-                image=args.image,
                 ssl_cert_file=args.ssl_cert_file,
                 ssl_key_file=args.ssl_key_file,
             )
@@ -1618,7 +1657,7 @@ class TestGenCreateDockerComposeFileStep(Step):
                 break
         return username, password
 
-    def create_compose_file(self, action, username, password, port, image, ssl_cert_file, ssl_key_file):
+    def create_compose_file(self, action, args, username, password, ssl_cert_file, ssl_key_file):
         ssl_variables = """
               SSL_CERT_FILE: /dk/ssl/cert.crt
               SSL_KEY_FILE: /dk/ssl/cert.key
@@ -1646,18 +1685,20 @@ class TestGenCreateDockerComposeFileStep(Step):
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
               TG_DOCKER_RELEASE_CHECK_ENABLED: yes
+              TG_INSTANCE_ID: {action.analytics.get_instance_id()}
+              TG_ANALYTICS: {'yes' if args.send_analytics_data else 'no'}
               {ssl_variables}
 
             services:
               engine:
-                image: {image}
+                image: {args.image}
                 container_name: testgen
                 environment: *common-variables
                 volumes:
                   - testgen_data:/var/lib/testgen
                   {ssl_volumes}      
                 ports:
-                  - {port}:{TESTGEN_DEFAULT_PORT}
+                  - {args.port}:{TESTGEN_DEFAULT_PORT}
                 extra_hosts:
                   - host.docker.internal:host-gateway
                 depends_on:
@@ -1698,7 +1739,7 @@ class TestGenPullImagesStep(Step):
     label = "Pulling docker images"
 
     def execute(self, action, args):
-        action.additional_analytics["pull_timeout"] = args.pull_timeout
+        action.analytics.additional_properties["pull_timeout"] = args.pull_timeout
 
         try:
             action.run_cmd_retries(
@@ -1898,7 +1939,7 @@ class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
 
 class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
     steps = [
-        TestGenVerifyVersionStep(),
+        UpdateComposeFileStep(),
         TestGenStopStep(),
         TestGenPullImagesStep(),
         TestGenStartStep(),
@@ -2007,7 +2048,7 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
         return parser
 
     def execute(self, args):
-        self.additional_analytics["obs_export"] = args.obs_export
+        self.analytics.additional_properties["obs_export"] = args.obs_export
 
         CONSOLE.title("Run TestGen demo")
 
