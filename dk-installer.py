@@ -161,7 +161,10 @@ def get_testgen_volumes(action):
 
 @functools.cache
 def get_installer_version():
-    return hashlib.md5(pathlib.Path(__file__).read_bytes()).hexdigest()
+    try:
+        return hashlib.md5(pathlib.Path(__file__).read_bytes()).hexdigest()
+    except Exception:
+        return "N/A"
 
 
 class StreamIterator:
