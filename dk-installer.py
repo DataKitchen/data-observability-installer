@@ -879,7 +879,6 @@ REQ_MINIKUBE = Requirement("minikube", ("minikube", "version"))
 REQ_MINIKUBE_DRIVER = Requirement("minikube driver", ("{driver}", "-v"))
 REQ_DOCKER = Requirement("Docker", ("docker", "-v"))
 REQ_DOCKER_DAEMON = Requirement("Docker daemon process", ("docker", "info"))
-REQ_TESTGEN_CONFIG = Requirement(f"TestGen {DOCKER_COMPOSE_FILE}", ("docker", "compose", "config"))
 
 
 class AnalyticsMultiStepAction(MultiStepAction):
@@ -1954,7 +1953,17 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
     intro_text = ["This process may take 5~10 minutes depending on your system resources and network speed."]
 
     args_cmd = "upgrade"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_CONFIG]
+
+    @property
+    def requirements(self):
+        return [
+            REQ_DOCKER,
+            REQ_DOCKER_DAEMON,
+            Requirement(
+                f"TestGen {DOCKER_COMPOSE_FILE}",
+                ("docker", "compose", "-f", str(self.docker_compose_file_path), "config")
+            ),
+        ]
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
