@@ -1964,6 +1964,16 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
             action="store_true",
             help="Whether to skip the version check before upgrading.",
         )
+        parser.add_argument(
+            "--pull-timeout",
+            type=int,
+            action="store",
+            default=TESTGEN_PULL_TIMEOUT,
+            help=(
+                "Maximum amount of time in minutes that Docker will be allowed to pull the images. "
+                "Defaults to '%(default)s'"
+            ),
+        )
 
 
 class TestgenDeleteAction(Action, TestgenActionMixin):
