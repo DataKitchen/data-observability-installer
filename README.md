@@ -52,7 +52,7 @@ And it allows you to <b>make fast, safe development changes</b>.
 | Software                | Tested Versions               | Command to check version                |
 |-------------------------|-------------------------|-------------------------------|
 | [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12                | `python3 --version`                |
-| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 25.0, 26.1, 27.5 <br/> 2.30, 2.31, 2.32        | `docker -v` <br/> `docker compose version`         |
+| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 26.1, 27.5, 28.0 <br/> 2.32, 2.33, 2.34        | `docker -v` <br/> `docker compose version`         |
 
 #### Additional Requirements for Observability only
 
