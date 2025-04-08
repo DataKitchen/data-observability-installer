@@ -59,7 +59,7 @@ And it allows you to <b>make fast, safe development changes</b>.
 | Software                | Tested Versions               | Command to check version                |
 |-------------------------|-------------------------|-------------------------------|
 | [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.33, 1.34, 1.35                | `minikube version`                |
-| [Helm](https://helm.sh/docs/intro/install/)            | 3.13, 3.14        | `helm version`         |
+| [Helm](https://helm.sh/docs/intro/install/)            | 3.15, 3.16, 3.17        | `helm version`         |
 
 ### Download the installer
 
