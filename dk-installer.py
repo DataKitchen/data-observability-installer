@@ -560,6 +560,7 @@ class Action:
                 cmd_fail_exception = e
             else:
                 cmd_fail_exception = None
+                break
             finally:
                 retries -= 1
 
@@ -604,7 +605,6 @@ class Action:
                         LOG.warning(f"Error decoding JSON from stdout line #{idx}")
                 return json_lines
 
-
     @contextlib.contextmanager
     def start_cmd(self, *cmd, raise_on_non_zero=True, env=None, **popen_args):
         started = time.time()
@@ -623,7 +623,7 @@ class Action:
             )
         except FileNotFoundError as e:
             LOG.error("Command [%04d] failed to find the executable", self._cmd_idx)
-            raise CommandFailed(self._cmd_idx, cmd, None) from e
+            raise CommandFailed(self._cmd_idx, cmd_str, None) from e
 
         slug_cmd = re.sub(r"[^a-zA-Z]+", "-", cmd_str)[:100].strip("-")
 
@@ -643,7 +643,7 @@ class Action:
         # We capture and raise CommandFailed to allow the client code to raise an empty CommandFailed exception
         # but still get a contextualized exception at the end
         except CommandFailed as e:
-            raise CommandFailed(self._cmd_idx, cmd, proc.returncode) from e.__cause__
+            raise CommandFailed(self._cmd_idx, cmd_str, proc.returncode) from e.__cause__
         finally:
             elapsed = time.time() - started
             LOG.info(
@@ -1871,7 +1871,12 @@ class TestgenActionMixin:
 
     @property
     def docker_compose_file_path(self):
-        return self.data_folder.joinpath(DOCKER_COMPOSE_FILE)
+        compose_path = self.data_folder.joinpath(DOCKER_COMPOSE_FILE)
+        try:
+            compose_path = compose_path.relative_to(pathlib.Path().absolute())
+        except ValueError:
+            pass
+        return compose_path
 
 
 class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
