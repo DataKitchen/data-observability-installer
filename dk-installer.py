@@ -8,6 +8,7 @@ import datetime
 import functools
 import hashlib
 import ipaddress
+import itertools
 import json
 import logging
 import logging.config
@@ -258,6 +259,11 @@ class Console:
         self._last_is_space = False
         return False
 
+    def print_log(self, log_path: pathlib.Path) -> None:
+        with log_path.open() as log_file:
+            for line in log_file:
+                self.msg(line.strip())
+
 
 CONSOLE = Console()
 
@@ -284,7 +290,9 @@ class CommandFailed(Exception):
     It's useful to prevent the installer logic from having to check the output of each command
     """
 
-    def __init__(self, idx=None, cmd=None, ret_code=None):
+    def __init__(self, idx: int | None = None, cmd: str | None = None, ret_code: int | None = None):
+        if any((idx, cmd, ret_code)) and not all((idx, cmd)):
+            raise ValueError(f"{self.__class__.__name__} requires 'idx' and 'cmd' to be set unless all args are None.")
         self.idx = idx
         self.cmd = cmd
         self.ret_code = ret_code
@@ -477,9 +485,38 @@ class Action:
                 }
             )
 
-    def _msg_unexpected_error(self):
+    def _get_failed_cmd_log_file_path(self, exception: Exception) -> tuple[CommandFailed, pathlib.Path] | tuple[None, None]:
+
+        while exception:
+            if isinstance(exception, CommandFailed):
+                break
+            else:
+                exception = exception.__cause__
+
+        if exception:
+            for stream in ("stderr", "stdout"):
+                try:
+                    log_file_path, = self.session_folder.glob(f"{exception.idx:04d}-{stream}-*.txt")
+                except ValueError:
+                    continue
+                else:
+                    return exception, log_file_path
+
+        return None, None
+
+    def _msg_unexpected_error(self, exception: Exception) -> None:
         msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
-        CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
+        exception, log_path = self._get_failed_cmd_log_file_path(exception)
+        if exception and log_path:
+            CONSOLE.msg(f"An unexpected error occurred.")
+            CONSOLE.msg(f"Command '{exception.cmd}' failed with code {exception.ret_code}. See the output below.")
+            CONSOLE.space()
+            CONSOLE.print_log(log_path)
+            CONSOLE.space()
+            CONSOLE.msg(f"Please check the logs in {msg_file_path} for details.")
+        else:
+            CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
+
         CONSOLE.space()
         CONSOLE.msg(
             "For assistance, reach out the #support channel on "
@@ -525,12 +562,12 @@ class Action:
 
             except AbortAction:
                 raise
-            except InstallerError:
-                self._msg_unexpected_error()
+            except InstallerError as e:
+                self._msg_unexpected_error(e)
                 raise
             except Exception as e:
                 LOG.exception("Uncaught error: %r", e)
-                self._msg_unexpected_error()
+                self._msg_unexpected_error(e)
                 raise InstallerError from e
             except KeyboardInterrupt as e:
                 CONSOLE.space()
@@ -744,9 +781,9 @@ class MultiStepAction(Action):
                 LOG.exception("Post-execution of step [%s] failed", step)
 
         if action_fail_exception:
-            raise action_fail_exception.__class__(
-                f"Failed step: {action_fail_step.__class__.__name__}"
-            ) from action_fail_exception
+            exc_msg = f"Failed step: {action_fail_step.__class__.__name__}"
+            exc_class = AbortAction if isinstance(action_fail_exception, AbortAction) else InstallerError
+            raise exc_class(exc_msg) from action_fail_exception
 
 
 class Installer:

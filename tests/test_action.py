@@ -1,3 +1,4 @@
+from pathlib import Path
 from subprocess import TimeoutExpired
 
 import pytest
@@ -104,20 +105,63 @@ def test_exec_with_log(action, args_mock, analytics_mock, execute_mock):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("exec_exception,expected_exception", (
-    (AbortAction(), AbortAction),
-    (InstallerError(), InstallerError),
-    (RuntimeError(), InstallerError),
-    (KeyboardInterrupt(), InstallerError),
+@pytest.mark.parametrize("exec_exc,expected_exc,print_msg", (
+    (AbortAction(), AbortAction, False),
+    (InstallerError(), InstallerError, True),
+    (RuntimeError(), InstallerError, True),
+    (KeyboardInterrupt(), InstallerError, False),
 ))
-def test_exec_with_log_raises(exec_exception, expected_exception, action, args_mock, analytics_mock, execute_mock):
-    execute_mock.side_effect = exec_exception
+def test_exec_with_log_raises(exec_exc, expected_exc, print_msg, action, args_mock, analytics_mock, execute_mock):
+    execute_mock.side_effect = exec_exc
 
-    with pytest.raises(expected_exception) as exc_info:
-        action.execute_with_log(args_mock)
+    with patch.object(action, "_msg_unexpected_error") as uncauhgt_msg_mock:
+        with pytest.raises(expected_exc) as exc_info:
+            action.execute_with_log(args_mock)
 
     execute_mock.assert_called_once_with(args_mock)
-    assert exec_exception in (exc_info.value, exc_info.value.__cause__)
+    assert exec_exc in (exc_info.value, exc_info.value.__cause__)
+    assert uncauhgt_msg_mock.call_args_list == ([call(exec_exc)] if print_msg else [])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "exc_levels, glob_side_effect, expected_calls, expected_return",
+    (
+        (0, ([], [Path("stdout.txt")]), ("stderr", "stdout"), (ANY, Path("stdout.txt"))),
+        (
+            1,
+            ([Path("stderr.txt"), Path("stderr_2.txt")], [Path("stdout.txt")]),
+            ("stderr", "stdout"),
+            (ANY, Path("stdout.txt"))
+        ),
+        (5, ([Path("stderr.txt")], [Path("stdout.txt")]), ("stderr",), (ANY, Path("stderr.txt"))),
+        (3, ([], [Path("stdout.txt"), Path("stdout.txt")]), ("stderr", "stdout"), (None, None)),
+        (1, ([], []), ("stderr", "stdout"), (None, None)),
+    ),
+    ids=(
+        "direct exception, stdout only",
+        "one layer deep, two stderr files",
+        "five layers deep, stderr is picked",
+        "three layers deep, two stdout",
+        "one layers deep, no files",
+    ),
+)
+def test_get_failed_cmd_log(action, exc_levels, glob_side_effect, expected_calls, expected_return):
+
+    cmd_failed_exc = CommandFailed(42, "cmd 42", 2)
+    exc = cmd_failed_exc
+    for n in range(exc_levels):
+        outer_exc = RuntimeError(str(n + 1))
+        outer_exc.__cause__ = exc
+        exc = outer_exc
+
+    action.session_folder.glob.side_effect = glob_side_effect
+
+    ret = action._get_failed_cmd_log_file_path(exc)
+
+    assert ret == expected_return
+    assert ret[0] in (None, cmd_failed_exc)
+    action.session_folder.glob.assert_has_calls([call(f"0042-{stream}-*.txt") for stream in expected_calls])
 
 
 @pytest.mark.unit
