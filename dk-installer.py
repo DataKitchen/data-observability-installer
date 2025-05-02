@@ -8,7 +8,6 @@ import datetime
 import functools
 import hashlib
 import ipaddress
-import itertools
 import json
 import logging
 import logging.config
@@ -46,6 +45,7 @@ HELM_APP = (
     os.environ.get("HELM_FOLDER", "datakitchen/dataops-") + "observability-app",
 )
 HELM_DEFAULT_TIMEOUT = 10
+REQ_CHECK_TIMEOUT = 30
 DOCKER_COMPOSE_FILE = "docker-compose.yml"
 DEFAULT_DOCKER_REGISTRY = "docker.io"
 DOCKER_NETWORK = "datakitchen-network"
@@ -281,7 +281,9 @@ class Requirement:
 
     def check_availability(self, action, args):
         try:
-            action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
+            action.run_cmd_retries(
+                *(seg.format(**args.__dict__) for seg in self.cmd), timeout=REQ_CHECK_TIMEOUT, retries=1,
+            )
         except CommandFailed:
             CONSOLE.space()
             for line in self.fail_msg:
