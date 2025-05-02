@@ -8,7 +8,6 @@ import datetime
 import functools
 import hashlib
 import ipaddress
-import itertools
 import json
 import logging
 import logging.config
@@ -46,6 +45,7 @@ HELM_APP = (
     os.environ.get("HELM_FOLDER", "datakitchen/dataops-") + "observability-app",
 )
 HELM_DEFAULT_TIMEOUT = 10
+REQ_CHECK_TIMEOUT = 30
 DOCKER_COMPOSE_FILE = "docker-compose.yml"
 DEFAULT_DOCKER_REGISTRY = "docker.io"
 DOCKER_NETWORK = "datakitchen-network"
@@ -261,8 +261,13 @@ class Console:
 
     def print_log(self, log_path: pathlib.Path) -> None:
         with log_path.open() as log_file:
+            print("")
             for line in log_file:
-                self.msg(line.strip())
+                line = line.strip()
+                if line:
+                    print(line)
+            print("")
+            self._last_is_space = True
 
 
 CONSOLE = Console()
@@ -270,14 +275,19 @@ CONSOLE = Console()
 
 @dataclasses.dataclass
 class Requirement:
-    name: str
+    key: str
     cmd: tuple[str, ...]
+    fail_msg: tuple[str, ...]
 
     def check_availability(self, action, args):
         try:
-            action.run_cmd(*(seg.format(**args.__dict__) for seg in self.cmd))
+            action.run_cmd_retries(
+                *(seg.format(**args.__dict__) for seg in self.cmd), timeout=REQ_CHECK_TIMEOUT, retries=1,
+            )
         except CommandFailed:
-            CONSOLE.msg(f"The installer could not verify that '{self.name}' is available.")
+            CONSOLE.space()
+            for line in self.fail_msg:
+                CONSOLE.msg(line.format(**args.__dict__))
             return False
         else:
             return True
@@ -411,7 +421,7 @@ class Action:
     _cmd_idx: int = 0
     args_cmd: str
     args_parser_parents: list = []
-    requirements: list = []
+    requirements: list[Requirement] = []
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
@@ -505,24 +515,16 @@ class Action:
         return None, None
 
     def _msg_unexpected_error(self, exception: Exception) -> None:
-        msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         exception, log_path = self._get_failed_cmd_log_file_path(exception)
         if exception and log_path:
-            CONSOLE.msg(f"An unexpected error occurred.")
             CONSOLE.msg(f"Command '{exception.cmd}' failed with code {exception.ret_code}. See the output below.")
-            CONSOLE.space()
             CONSOLE.print_log(log_path)
-            CONSOLE.space()
-            CONSOLE.msg(f"Please check the logs in {msg_file_path} for details.")
-        else:
-            CONSOLE.msg(f"An unexpected error occurred. Please check the logs in {msg_file_path} for details.")
 
+        msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
         CONSOLE.space()
-        CONSOLE.msg(
-            "For assistance, reach out the #support channel on "
-            "https://data-observability-slack.datakitchen.io/join, "
-            "attaching the logs."
-        )
+        CONSOLE.msg("For assistance, send the logs to open-source-support@datakitchen.io or reach out")
+        CONSOLE.msg("to the #support channel on https://data-observability-slack.datakitchen.io/join.")
+        CONSOLE.msg(f"The logs can be found in {msg_file_path}.")
 
     def execute_with_log(self, args):
         with (
@@ -552,10 +554,9 @@ class Action:
             )
 
             try:
-                missing_reqs = [req.name for req in self.requirements if not req.check_availability(self, args)]
+                missing_reqs = [req.key for req in self.requirements if not req.check_availability(self, args)]
                 if missing_reqs:
                     self.analytics.additional_properties["missing_requirements"] = missing_reqs
-                    CONSOLE.msg("Not all requirements are fulfilled")
                     raise AbortAction
 
                 self.execute(args)
@@ -911,11 +912,31 @@ def get_minikube_parser():
 
 minikube_parser = get_minikube_parser()
 
-REQ_HELM = Requirement("Helm", ("helm", "version"))
-REQ_MINIKUBE = Requirement("minikube", ("minikube", "version"))
-REQ_MINIKUBE_DRIVER = Requirement("minikube driver", ("{driver}", "-v"))
-REQ_DOCKER = Requirement("Docker", ("docker", "-v"))
-REQ_DOCKER_DAEMON = Requirement("Docker daemon process", ("docker", "info"))
+REQ_HELM = Requirement(
+    "HELM",
+    ("helm", "version"),
+    ("The prerequisite Helm is not available.", "Install Helm and try again.")
+)
+REQ_MINIKUBE = Requirement(
+    "MINIKUBE",
+    ("minikube", "version"),
+    ("The prerequisite Minikube is not available.", "Install Minikube and try again."),
+)
+REQ_MINIKUBE_DRIVER = Requirement(
+    "MINIKUBE_DRIVER",
+    ("{driver}", "-v"),
+    ("The '{driver}' driver for Minikube is not available", "Install '{driver}' and try again."),
+)
+REQ_DOCKER = Requirement(
+    "DOCKER",
+    ("docker", "-v"),
+    ("The prerequisite Docker is not available.", "Install Docker and try again."),
+)
+REQ_DOCKER_DAEMON = Requirement(
+    "DOCKER_ENGINE",
+    ("docker", "info"),
+    ("The Docker engine is not running.", "Start the Docker engine and try again."),
+)
 
 
 class AnalyticsMultiStepAction(MultiStepAction):
@@ -1583,7 +1604,7 @@ class UpdateComposeFileStep(Step):
         if args.send_analytics_data:
             self.update_analytics = "TG_INSTANCE_ID" not in contents
         else:
-            if not re.findall(r"TG_ANALYTICS:\s*off", contents):
+            if not re.findall(r"TG_ANALYTICS:\s*no", contents):
                 self.update_analytics = True
                 CONSOLE.msg("Analytics will be disabled.")
 
@@ -1901,7 +1922,6 @@ class TestGenUpgradeDatabaseStep(Step):
 
         match = re.search("This version:(.*)", output)
         CONSOLE.msg(f"Application version: {match.group(1)}")
-        CONSOLE.space()
 
 
 class TestgenActionMixin:
@@ -2002,8 +2022,9 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
             REQ_DOCKER,
             REQ_DOCKER_DAEMON,
             Requirement(
-                f"TestGen {DOCKER_COMPOSE_FILE}",
-                ("docker", "compose", "-f", str(self.docker_compose_file_path), "config")
+                "TG_COMPOSE_FILE",
+                ("docker", "compose", "-f", str(self.docker_compose_file_path), "config"),
+                ("TestGen's Docker compose file is not available.", "Re-install TestGen and try again.")
             ),
         ]
 
