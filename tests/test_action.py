@@ -2,100 +2,8 @@ from pathlib import Path
 from subprocess import TimeoutExpired
 
 import pytest
-from unittest.mock import Mock, patch, PropertyMock, call, ANY
-from contextlib import contextmanager
-from installer import Action, CONSOLE, CommandFailed, AbortAction, InstallerError
-
-
-@pytest.fixture
-def proc_mock():
-    proc = Mock()
-    proc.returncode = 0
-    proc.wait.return_value = None
-    proc.poll.return_value = 0
-    return proc
-
-
-@pytest.fixture
-def stdout_mock():
-    return Mock(return_value=[])
-
-
-@pytest.fixture
-def stderr_mock():
-    return Mock(return_value=[])
-
-
-@pytest.fixture
-def console_msg_mock():
-    with patch.object(CONSOLE, "msg") as mock:
-        yield mock
-
-
-@pytest.fixture
-def start_cmd_mock(action, proc_mock, stdout_mock, stderr_mock):
-
-    exit_mock = Mock()
-
-    @contextmanager
-    def _start_cmd(*args, **kwargs):
-        try:
-            yield proc_mock, stdout_mock(), stderr_mock()
-        finally:
-            exit_mock()
-
-    with patch.object(action, "start_cmd", side_effect=_start_cmd) as mock:
-        mock.attach_mock(exit_mock, "__exit__")
-        yield mock
-
-
-@pytest.fixture
-def popen_mock(proc_mock):
-    with patch("installer.subprocess.Popen") as popen_mock:
-        popen_mock.return_value = proc_mock
-        yield popen_mock
-
-
-@pytest.fixture
-def stream_iter_mock():
-    with patch("installer.StreamIterator") as si_mock:
-        si_mock.__enter__.return_value = si_mock
-        yield si_mock
-
-
-@pytest.fixture
-def analytics_mock():
-    with patch("installer.AnalyticsWrapper") as mock:
-        yield mock
-
-
-@pytest.fixture
-def execute_mock(action):
-    with patch.object(action, "execute") as mock:
-        yield mock
-
-
-@pytest.fixture
-def action():
-
-    class TestAction(Action):
-        args_cmd = "test"
-
-    instance = TestAction()
-    with (
-        patch.object(instance, "session_zip", create=True),
-        patch.object(instance, "session_folder", create=True),
-        patch.object(instance, "_cmd_idx", create=True, new=0),
-        patch.object(instance, "configure_logging", create=True),
-        patch.object(instance, "init_session_folder", create=True),
-        patch.object(instance, "execute"),
-    ):
-        yield instance
-
-@pytest.fixture
-def args_mock():
-    mock = Mock()
-    return mock
+from unittest.mock import Mock, patch, call, ANY
+from tests.installer import CommandFailed, AbortAction, InstallerError
 
 
 @pytest.mark.unit
@@ -105,12 +13,15 @@ def test_exec_with_log(action, args_mock, analytics_mock, execute_mock):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("exec_exc,expected_exc,print_msg", (
-    (AbortAction(), AbortAction, False),
-    (InstallerError(), InstallerError, True),
-    (RuntimeError(), InstallerError, True),
-    (KeyboardInterrupt(), InstallerError, False),
-))
+@pytest.mark.parametrize(
+    "exec_exc,expected_exc,print_msg",
+    (
+        (AbortAction(), AbortAction, False),
+        (InstallerError(), InstallerError, True),
+        (RuntimeError(), InstallerError, True),
+        (KeyboardInterrupt(), InstallerError, False),
+    ),
+)
 def test_exec_with_log_raises(exec_exc, expected_exc, print_msg, action, args_mock, analytics_mock, execute_mock):
     execute_mock.side_effect = exec_exc
 
@@ -132,7 +43,7 @@ def test_exec_with_log_raises(exec_exc, expected_exc, print_msg, action, args_mo
             1,
             ([Path("stderr.txt"), Path("stderr_2.txt")], [Path("stdout.txt")]),
             ("stderr", "stdout"),
-            (ANY, Path("stdout.txt"))
+            (ANY, Path("stdout.txt")),
         ),
         (5, ([Path("stderr.txt")], [Path("stdout.txt")]), ("stderr",), (ANY, Path("stderr.txt"))),
         (3, ([], [Path("stdout.txt"), Path("stdout.txt")]), ("stderr", "stdout"), (None, None)),
@@ -147,7 +58,6 @@ def test_exec_with_log_raises(exec_exc, expected_exc, print_msg, action, args_mo
     ),
 )
 def test_get_failed_cmd_log(action, exc_levels, glob_side_effect, expected_calls, expected_return):
-
     cmd_failed_exc = CommandFailed(42, "cmd 42", 2)
     exc = cmd_failed_exc
     for n in range(exc_levels):
@@ -175,7 +85,7 @@ def test_run_cmd_text(action, start_cmd_mock, stdout_mock, console_msg_mock):
 
 @pytest.mark.unit
 def test_run_cmd_json(action, start_cmd_mock, stdout_mock):
-    stdout_mock.return_value = [b"{\"foo\": 123}"]
+    stdout_mock.return_value = [b'{"foo": 123}']
     result = action.run_cmd("cmd", capture_json=True)
     assert result == {"foo": 123}
     start_cmd_mock.assert_called_once()
@@ -191,7 +101,7 @@ def test_run_cmd_invalid_json(action, start_cmd_mock, stdout_mock):
 
 @pytest.mark.unit
 def test_run_cmd_json_lines(action, start_cmd_mock, stdout_mock):
-    stdout_mock.return_value = [b"{\"foo\": 123}", b"something else", b"{\"foo\": 321}"]
+    stdout_mock.return_value = [b'{"foo": 123}', b"something else", b'{"foo": 321}']
     result = action.run_cmd("cmd", capture_json_lines=True)
     assert result == [{"foo": 123}, {"foo": 321}]
     start_cmd_mock.assert_called_once()
@@ -236,9 +146,11 @@ def test_run_cmd_retries_raises(action, start_cmd_mock, proc_mock):
 
 @pytest.mark.unit
 def test_start_cmd(action, popen_mock, stream_iter_mock):
-    with action.start_cmd(
-        "cmd", "arg", env={"var": "val"}, popen_extra=True, raise_on_non_zero=False
-    ) as (proc_mock, stdout_mock, stderr_mock):
+    with action.start_cmd("cmd", "arg", env={"var": "val"}, popen_extra=True, raise_on_non_zero=False) as (
+        proc_mock,
+        stdout_mock,
+        stderr_mock,
+    ):
         proc_mock.returncode = 55
 
     stream_iter_mock.assert_has_calls(
@@ -249,7 +161,8 @@ def test_start_cmd(action, popen_mock, stream_iter_mock):
             call().__enter__(),
             call().__exit__(None, None, None),
             call().__exit__(None, None, None),
-        ], any_order=True,
+        ],
+        any_order=True,
     )
 
     assert proc_mock.wait.call_count == 1
