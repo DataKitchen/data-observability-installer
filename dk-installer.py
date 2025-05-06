@@ -1741,6 +1741,7 @@ class TestGenCreateDockerComposeFileStep(Step):
               TESTGEN_PASSWORD: {password}
               TG_DECRYPT_SALT: {generate_password()}
               TG_DECRYPT_PASSWORD: {generate_password()}
+              TG_JWT_HASHING_KEY: {base64.b64encode(random.randbytes(32))}
               TG_METADATA_DB_HOST: postgres
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
