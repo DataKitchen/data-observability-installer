@@ -426,7 +426,10 @@ class Action:
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
         if 'Windows' == platform.system():
-            self.data_folder = pathlib.Path.home().joinpath("Documents", "DataKitchenApps")
+            try:
+                self.data_folder = pathlib.Path(os.environ["LOCALAPPDATA"], "DataKitchenApps")
+            except KeyError:
+                self.data_folder = pathlib.Path("~", "Documents", "DataKitchenApps").expanduser()
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
             self.data_folder = pathlib.Path(sys.argv[0]).absolute().parent
