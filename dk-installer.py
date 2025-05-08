@@ -1566,6 +1566,7 @@ class UpdateComposeFileStep(Step):
     def __init__(self):
         self.update_version = None
         self.update_analytics = False
+        self.update_token = False
         super().__init__()
 
     def pre_execute(self, action, args):
@@ -1611,17 +1612,20 @@ class UpdateComposeFileStep(Step):
                 self.update_analytics = True
                 CONSOLE.msg("Analytics will be disabled.")
 
-        if not self.update_version and not self.update_analytics:
+        self.update_token = "TG_JWT_HASHING_KEY" not in contents
+
+        if not any((self.update_version, self.update_analytics, self.update_token)):
             CONSOLE.msg("No changes will be applied.")
             raise AbortAction
 
     def execute(self, action, args):
-        if not self.update_version and not self.update_analytics:
+        if not any((self.update_version, self.update_analytics, self.update_token)):
             raise SkipStep
         
         contents = action.docker_compose_file_path.read_text()
         if self.update_version:
             contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_LATEST_TAG}\n", contents)
+
         if self.update_analytics:
             if args.send_analytics_data:
                 if "TG_INSTANCE_ID" not in contents:
@@ -1634,6 +1638,11 @@ class UpdateComposeFileStep(Step):
                 else:
                     match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
                     contents = contents[0:match.end()] + match.group(1) + f"\n{match.group(1)}TG_ANALYTICS: no" + contents[match.end():]
+
+        if self.update_token:
+            match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
+            var = f"\n{match.group(1)}TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}"
+            contents = contents[0:match.end()] + match.group(1) + var + contents[match.end():]
 
         action.docker_compose_file_path.write_text(contents)
 
@@ -1744,6 +1753,7 @@ class TestGenCreateDockerComposeFileStep(Step):
               TESTGEN_PASSWORD: {password}
               TG_DECRYPT_SALT: {generate_password()}
               TG_DECRYPT_PASSWORD: {generate_password()}
+              TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}
               TG_METADATA_DB_HOST: postgres
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
