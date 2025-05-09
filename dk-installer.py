@@ -28,6 +28,7 @@ import urllib.request
 import urllib.parse
 import zipfile
 
+
 #
 # Initial setup
 #
@@ -95,16 +96,18 @@ LOG = logging.getLogger()
 # Utility functions
 #
 
+
 def collect_images_digest(action, images, env=None):
-    action.run_cmd(
-        "docker",
-        "image",
-        "inspect",
-        *images,
-        "--format=DIGEST: {{ index .RepoDigests 0 }} CREATED: {{ .Created }}",
-        raise_on_non_zero=False,
-        env=env,
-    )
+    if images:
+        action.run_cmd(
+            "docker",
+            "image",
+            "inspect",
+            *images,
+            "--format=DIGEST: {{ index .RepoDigests 0 }} CREATED: {{ .Created }}",
+            raise_on_non_zero=False,
+            env=env,
+        )
 
 
 def collect_user_input(fields: list[str]) -> dict[str, str]:
@@ -214,7 +217,6 @@ class StreamIterator:
 
 
 class Console:
-
     MARGIN = "   | "
 
     def __init__(self):
@@ -282,7 +284,9 @@ class Requirement:
     def check_availability(self, action, args):
         try:
             action.run_cmd_retries(
-                *(seg.format(**args.__dict__) for seg in self.cmd), timeout=REQ_CHECK_TIMEOUT, retries=1,
+                *(seg.format(**args.__dict__) for seg in self.cmd),
+                timeout=REQ_CHECK_TIMEOUT,
+                retries=1,
             )
         except CommandFailed:
             CONSOLE.space()
@@ -300,7 +304,12 @@ class CommandFailed(Exception):
     It's useful to prevent the installer logic from having to check the output of each command
     """
 
-    def __init__(self, idx: int | None = None, cmd: str | None = None, ret_code: int | None = None):
+    def __init__(
+        self,
+        idx: int | None = None,
+        cmd: str | None = None,
+        ret_code: int | None = None,
+    ):
         if any((idx, cmd, ret_code)) and not all((idx, cmd)):
             raise ValueError(f"{self.__class__.__name__} requires 'idx' and 'cmd' to be set unless all args are None.")
         self.idx = idx
@@ -321,7 +330,6 @@ class SkipStep(Exception):
 
 
 class AnalyticsWrapper:
-
     def __init__(self, action, args):
         self.action = action
         self.args = args
@@ -370,7 +378,7 @@ class AnalyticsWrapper:
                 "installer_version": get_installer_version(),
                 "distinct_id": self.get_distinct_id(),
                 "instance_id": self.get_instance_id(),
-                **self.additional_properties
+                **self.additional_properties,
             }
 
             error_chain = []
@@ -391,9 +399,7 @@ class AnalyticsWrapper:
         return ssl_context
 
     def send_mp_request(self, endpoint, payload):
-        post_data = urllib.parse.urlencode(
-            {"data": base64.b64encode(json.dumps(payload).encode()).decode()}
-        ).encode()
+        post_data = urllib.parse.urlencode({"data": base64.b64encode(json.dumps(payload).encode()).decode()}).encode()
 
         req = urllib.request.Request(f"{MIXPANEL_URL}/{endpoint}", data=post_data, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
@@ -408,14 +414,19 @@ class AnalyticsWrapper:
             "properties": {
                 "token": MIXPANEL_TOKEN,
                 **properties,
-            }
+            },
         }
         try:
             self.send_mp_request("track?ip=1", track_payload)
         except Exception as e:
-            LOG.debug(f"Failed to send analytics event '%s': %s", event_name, e)
+            LOG.debug("Failed to send analytics event '%s': %s", event_name, e)
         else:
-            LOG.debug("Sent analytics event '%s' with properties %s", event_name, properties.keys())
+            LOG.debug(
+                "Sent analytics event '%s' with properties %s",
+                event_name,
+                properties.keys(),
+            )
+
 
 class Action:
     _cmd_idx: int = 0
@@ -425,7 +436,7 @@ class Action:
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
-        if 'Windows' == platform.system():
+        if "Windows" == platform.system():
             try:
                 self.data_folder = pathlib.Path(os.environ["LOCALAPPDATA"], "DataKitchenApps")
             except KeyError:
@@ -448,7 +459,10 @@ class Action:
         finally:
             with zipfile.ZipFile(self.session_zip, "w") as session_zip:
                 for session_file in self.session_folder.iterdir():
-                    session_zip.write(session_file, arcname=session_file.relative_to(self.session_zip.parent))
+                    session_zip.write(
+                        session_file,
+                        arcname=session_file.relative_to(self.session_zip.parent),
+                    )
                     session_file.unlink()
             self.session_folder.rmdir()
             self.session_folder = None
@@ -480,7 +494,10 @@ class Action:
                     },
                 },
                 "loggers": {
-                    "": {"handlers": ["file"] + (["console"] if debug else []), "level": "DEBUG"},
+                    "": {
+                        "handlers": ["file"] + (["console"] if debug else []),
+                        "level": "DEBUG",
+                    },
                 },
             },
         )
@@ -498,8 +515,9 @@ class Action:
                 }
             )
 
-    def _get_failed_cmd_log_file_path(self, exception: Exception) -> tuple[CommandFailed, pathlib.Path] | tuple[None, None]:
-
+    def _get_failed_cmd_log_file_path(
+        self, exception: Exception
+    ) -> tuple[CommandFailed, pathlib.Path] | tuple[None, None]:
         while exception:
             if isinstance(exception, CommandFailed):
                 break
@@ -509,7 +527,7 @@ class Action:
         if exception:
             for stream in ("stderr", "stdout"):
                 try:
-                    log_file_path, = self.session_folder.glob(f"{exception.idx:04d}-{stream}-*.txt")
+                    (log_file_path,) = self.session_folder.glob(f"{exception.idx:04d}-{stream}-*.txt")
                 except ValueError:
                     continue
                 else:
@@ -528,6 +546,12 @@ class Action:
         CONSOLE.msg("For assistance, send the logs to open-source-support@datakitchen.io or reach out")
         CONSOLE.msg("to the #support channel on https://data-observability-slack.datakitchen.io/join.")
         CONSOLE.msg(f"The logs can be found in {msg_file_path}.")
+
+    def _check_requirements(self, args):
+        missing_reqs = [req.key for req in self.requirements if not req.check_availability(self, args)]
+        if missing_reqs:
+            self.analytics.additional_properties["missing_requirements"] = missing_reqs
+            raise AbortAction
 
     def execute_with_log(self, args):
         with (
@@ -551,17 +575,10 @@ class Action:
                 platform.python_implementation(),
                 platform.python_version(),
             )
-            LOG.info(
-                "Installer version: %s",
-                get_installer_version()
-            )
+            LOG.info("Installer version: %s", get_installer_version())
 
             try:
-                missing_reqs = [req.key for req in self.requirements if not req.check_availability(self, args)]
-                if missing_reqs:
-                    self.analytics.additional_properties["missing_requirements"] = missing_reqs
-                    raise AbortAction
-
+                self._check_requirements(args)
                 self.execute(args)
 
             except AbortAction:
@@ -605,7 +622,9 @@ class Action:
             finally:
                 retries -= 1
 
-        if cmd_fail_exception and (isinstance(cmd_fail_exception.__cause__, subprocess.TimeoutExpired) or raise_on_non_zero):
+        if cmd_fail_exception and (
+            isinstance(cmd_fail_exception.__cause__, subprocess.TimeoutExpired) or raise_on_non_zero
+        ):
             raise cmd_fail_exception
 
     def run_cmd(
@@ -660,7 +679,12 @@ class Action:
 
         try:
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE, env=env, **popen_args
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+                env=env,
+                **popen_args,
             )
         except FileNotFoundError as e:
             LOG.error("Command [%04d] failed to find the executable", self._cmd_idx)
@@ -674,7 +698,10 @@ class Action:
             return StreamIterator(proc, getattr(proc, stream_name), file_path)
 
         try:
-            with get_stream_iterator("stdout") as stdout_iter, get_stream_iterator("stderr") as stderr_iter:
+            with (
+                get_stream_iterator("stdout") as stdout_iter,
+                get_stream_iterator("stderr") as stderr_iter,
+            ):
                 try:
                     yield proc, stdout_iter, stderr_iter
                 finally:
@@ -718,7 +745,7 @@ class Step:
 
 
 class MultiStepAction(Action):
-    steps: list[Step]
+    steps: list[type[Step]]
     label: str = "Process"
     title: str = ""
     intro_text: list[str] = []
@@ -730,23 +757,27 @@ class MultiStepAction(Action):
 
     def execute(self, args):
         CONSOLE.title(self.title)
-        for step in self.steps:
+        action_steps = [step_class() for step_class in self.steps]
+        for step in action_steps:
             try:
                 LOG.debug("Running step [%s] pre-execute", step)
                 step.pre_execute(self, args)
+            except AbortAction as e:
+                LOG.info("Step [%s] pre-execute caused the action to abort", step)
+                raise AbortAction(f"Step '{step.__class__.__name__}' pre-execute aborted") from e
             except InstallerError as e:
                 LOG.info("Step [%s] pre-execute failed", step)
-                raise e.__class__(f"Failed step pre-execute: {step.__class__.__name__}") from e
+                raise e.__class__(f"Step '{step.__class__.__name__}' pre-execute failed") from e
             except Exception as e:
-                LOG.exception("Step [%s] pre-execute failed", step)
-                raise InstallerError(f"Failed step: {step.__class__.__name__}") from e
+                LOG.exception("Step [%s] pre-execute had an unexpected error", step)
+                raise InstallerError(f"Step '{step.__class__.__name__}' had an unexpected error") from e
 
         self._print_intro_text(args)
         CONSOLE.space()
         executed_steps: list[Step] = []
         action_fail_exception = None
         action_fail_step = None
-        for step in self.steps:
+        for step in action_steps:
             executed_steps.append(step)
             with CONSOLE:
                 CONSOLE.send(f"{step.label}... ")
@@ -764,7 +795,7 @@ class MultiStepAction(Action):
                         action_fail_exception = e
                         action_fail_step = step
                     else:
-                        LOG.warning(f"Non-required step [%s] failed with: %s", step, e)
+                        LOG.warning("Non-required step [%s] failed with: %s", step, e)
                 else:
                     CONSOLE.send("OK")
 
@@ -781,7 +812,7 @@ class MultiStepAction(Action):
                 else:
                     LOG.debug("Running [%s] on-action-fail", step)
                     step.on_action_fail(self, args)
-            except Exception as e:
+            except Exception:
                 LOG.exception("Post-execution of step [%s] failed", step)
 
         if action_fail_exception:
@@ -799,9 +830,14 @@ class Installer:
             default=True,
             dest="send_analytics_data",
             action="store_false",
-            help="Disable from sending anonymous analytics data to Datakitchen. Default is to send."
+            help="Disable from sending anonymous analytics data to Datakitchen. Default is to send.",
         )
-        self.sub_parsers = self.parser.add_subparsers(help="Products", required=True, title="product", description="Select which product to install or perform other actions")
+        self.sub_parsers = self.parser.add_subparsers(
+            help="Products",
+            required=True,
+            title="product",
+            description="Select which product to install or perform other actions",
+        )
 
     def run(self, def_args=None):
         # def_args has to be None to preserve the argparser behavior when only part of the arguments are used
@@ -834,7 +870,6 @@ class Installer:
 
 
 class Menu:
-
     def __init__(self, callback, name, title=None, width=40):
         self.callback = callback
         self.name = name
@@ -849,7 +884,14 @@ class Menu:
         self.options.append((label, menu, None, None))
 
     def _print_option(self, option, label):
-        print(textwrap.fill(label, width=self.width, initial_indent=f" {option:>2}. ", subsequent_indent="     "))
+        print(
+            textwrap.fill(
+                label,
+                width=self.width,
+                initial_indent=f" {option:>2}. ",
+                subsequent_indent="     ",
+            )
+        )
 
     def run(self, parent=None):
         while True:
@@ -918,7 +960,7 @@ minikube_parser = get_minikube_parser()
 REQ_HELM = Requirement(
     "HELM",
     ("helm", "version"),
-    ("The prerequisite Helm is not available.", "Install Helm and try again.")
+    ("The prerequisite Helm is not available.", "Install Helm and try again."),
 )
 REQ_MINIKUBE = Requirement(
     "MINIKUBE",
@@ -928,7 +970,10 @@ REQ_MINIKUBE = Requirement(
 REQ_MINIKUBE_DRIVER = Requirement(
     "MINIKUBE_DRIVER",
     ("{driver}", "-v"),
-    ("The '{driver}' driver for Minikube is not available", "Install '{driver}' and try again."),
+    (
+        "The '{driver}' driver for Minikube is not available",
+        "Install '{driver}' and try again.",
+    ),
 )
 REQ_DOCKER = Requirement(
     "DOCKER",
@@ -943,7 +988,6 @@ REQ_DOCKER_DAEMON = Requirement(
 
 
 class AnalyticsMultiStepAction(MultiStepAction):
-
     ANALYTICS_DISCLAIMER = [
         "DataKitchen has enabled anonymous aggregate user behavior analytics.",
         "Read the analytics documentation (and how to opt-out) here:",
@@ -1023,7 +1067,6 @@ class MinikubeProfileStep(Step):
             raise AbortAction
 
     def execute(self, action, args):
-
         action.analytics.additional_properties["minikube_mem"] = args.memory
         action.analytics.additional_properties["minikube_driver"] = args.driver
 
@@ -1089,7 +1132,15 @@ class HelmInstallStep(Step):
 
     def on_action_fail(self, action, args):
         release, _ = self.chart_info
-        action.run_cmd("helm", "status", release, "-o", "json", capture_json=True, raise_on_non_zero=False)
+        action.run_cmd(
+            "helm",
+            "status",
+            release,
+            "-o",
+            "json",
+            capture_json=True,
+            raise_on_non_zero=False,
+        )
 
         pods = action.run_cmd(
             "minikube",
@@ -1208,9 +1259,25 @@ class ObsHelmInstallPlatformStep(HelmInstallStep):
         self._collect_images_sha(action, args)
 
     def _collect_images_sha(self, action, args):
-        images = action.run_cmd("minikube", "-p", args.profile, "image", "list", "--format=json", capture_json=True)
+        images = action.run_cmd(
+            "minikube",
+            "-p",
+            args.profile,
+            "image",
+            "list",
+            "--format=json",
+            capture_json=True,
+        )
         image_repo_tags = [img["repoTags"][0] for img in images]
-        bash_env = action.run_cmd("minikube", "-p", args.profile, "docker-env", "--shell", "bash", capture_text=True)
+        bash_env = action.run_cmd(
+            "minikube",
+            "-p",
+            args.profile,
+            "docker-env",
+            "--shell",
+            "bash",
+            capture_text=True,
+        )
         env = dict(re.findall(r'export ([\w_]+)="([^"]+)"', bash_env, re.M))
         collect_images_digest(action, image_repo_tags, env)
 
@@ -1287,13 +1354,13 @@ class ObsGenerateDemoConfigStep(Step):
 
 class ObsInstallAction(AnalyticsMultiStepAction):
     steps = [
-        DockerNetworkStep(),
-        MinikubeProfileStep(),
-        SetupHelmReposStep(),
-        ObsHelmInstallServicesStep(),
-        ObsHelmInstallPlatformStep(),
-        ObsDataInitializationStep(),
-        ObsGenerateDemoConfigStep(),
+        DockerNetworkStep,
+        MinikubeProfileStep,
+        SetupHelmReposStep,
+        ObsHelmInstallServicesStep,
+        ObsHelmInstallPlatformStep,
+        ObsDataInitializationStep,
+        ObsGenerateDemoConfigStep,
     ]
 
     label = "Installation"
@@ -1412,7 +1479,9 @@ class ObsExposeAction(Action):
                     try:
                         with open(self.data_folder / DEMO_CONFIG_FILE, "r") as file:
                             json_config = json.load(file)
-                            json_config["api_host"] = BASE_API_URL_TPL.format(f"http://host.docker.internal:{args.port}")
+                            json_config["api_host"] = BASE_API_URL_TPL.format(
+                                f"http://host.docker.internal:{args.port}"
+                            )
 
                         with open(self.data_folder / DEMO_CONFIG_FILE, "w") as file:
                             file.write(json.dumps(json_config))
@@ -1444,9 +1513,7 @@ class ObsExposeAction(Action):
                 f"Verify if the platform is running and installer has permission to listen at the port {args.port}."
             )
             CONSOLE.space()
-            CONSOLE.msg(
-                f"If port {args.port} is in use, use the command option --port to specify an alternate value."
-            )
+            CONSOLE.msg(f"If port {args.port} is in use, use the command option --port to specify an alternate value.")
             raise AbortAction from e
 
 
@@ -1570,7 +1637,6 @@ class UpdateComposeFileStep(Step):
         super().__init__()
 
     def pre_execute(self, action, args):
-
         action.analytics.additional_properties["version_verify_skipped"] = args.skip_verify
 
         CONSOLE.space()
@@ -1592,8 +1658,8 @@ class UpdateComposeFileStep(Step):
                 current_version = match.group(1)
                 latest_version = match.group(2)
             except Exception:
-                CONSOLE.msg(f"Current version: unknown")
-                CONSOLE.msg(f"Latest version: unknown")
+                CONSOLE.msg("Current version: unknown")
+                CONSOLE.msg("Latest version: unknown")
                 pass
             else:
                 CONSOLE.msg(f"Current version: {current_version}")
@@ -1621,7 +1687,7 @@ class UpdateComposeFileStep(Step):
     def execute(self, action, args):
         if not any((self.update_version, self.update_analytics, self.update_token)):
             raise SkipStep
-        
+
         contents = action.docker_compose_file_path.read_text()
         if self.update_version:
             contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_LATEST_TAG}\n", contents)
@@ -1631,13 +1697,18 @@ class UpdateComposeFileStep(Step):
                 if "TG_INSTANCE_ID" not in contents:
                     match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
                     var = f"\n{match.group(1)}TG_INSTANCE_ID: {action.analytics.get_instance_id()}"
-                    contents = contents[0:match.end()] + match.group(1) + var + contents[match.end():]
+                    contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
             else:
                 if "TG_ANALYTICS" in contents:
                     contents = re.sub(r"^(\s*TG_ANALYTICS:).*$", r"\1 no", contents, flags=re.M)
                 else:
                     match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
-                    contents = contents[0:match.end()] + match.group(1) + f"\n{match.group(1)}TG_ANALYTICS: no" + contents[match.end():]
+                    contents = (
+                        contents[0 : match.end()]
+                        + match.group(1)
+                        + f"\n{match.group(1)}TG_ANALYTICS: no"
+                        + contents[match.end() :]
+                    )
 
         if self.update_token:
             match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
@@ -1648,7 +1719,6 @@ class UpdateComposeFileStep(Step):
 
 
 class TestGenCreateDockerComposeFileStep(Step):
-
     label = "Creating the docker-compose definition file"
 
     def __init__(self):
@@ -1674,7 +1744,6 @@ class TestGenCreateDockerComposeFileStep(Step):
             raise AbortAction
 
     def execute(self, action, args):
-
         action.analytics.additional_properties["used_custom_cert"] = args.ssl_cert_file and args.ssl_key_file
         action.analytics.additional_properties["existing_compose_file"] = action.using_existing
         action.analytics.additional_properties["used_custom_image"] = bool(args.image)
@@ -1682,7 +1751,11 @@ class TestGenCreateDockerComposeFileStep(Step):
         if action.using_existing:
             LOG.info("Re-using existing [%s]", action.docker_compose_file_path)
         else:
-            LOG.info("Creating [%s] for image [%s]", action.docker_compose_file_path, args.image)
+            LOG.info(
+                "Creating [%s] for image [%s]",
+                action.docker_compose_file_path,
+                args.image,
+            )
             self.create_compose_file(
                 action,
                 args,
@@ -1730,18 +1803,26 @@ class TestGenCreateDockerComposeFileStep(Step):
         return username, password
 
     def create_compose_file(self, action, args, username, password, ssl_cert_file, ssl_key_file):
-        ssl_variables = """
+        ssl_variables = (
+            """
               SSL_CERT_FILE: /dk/ssl/cert.crt
               SSL_KEY_FILE: /dk/ssl/cert.key
-        """ if ssl_cert_file and ssl_key_file else ""
-        ssl_volumes = f"""
+        """
+            if ssl_cert_file and ssl_key_file
+            else ""
+        )
+        ssl_volumes = (
+            f"""
                   - type: bind
                     source: {ssl_cert_file}
                     target: /dk/ssl/cert.crt
                   - type: bind
                     source: {ssl_key_file}
                     target: /dk/ssl/cert.key 
-        """ if ssl_cert_file and ssl_key_file else ""
+        """
+            if ssl_cert_file and ssl_key_file
+            else ""
+        )
 
         action.docker_compose_file_path.write_text(
             textwrap.dedent(
@@ -1759,7 +1840,7 @@ class TestGenCreateDockerComposeFileStep(Step):
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
               TG_DOCKER_RELEASE_CHECK_ENABLED: yes
               TG_INSTANCE_ID: {action.analytics.get_instance_id()}
-              TG_ANALYTICS: {'yes' if args.send_analytics_data else 'no'}
+              TG_ANALYTICS: {"yes" if args.send_analytics_data else "no"}
               {ssl_variables}
 
             services:
@@ -1866,7 +1947,14 @@ class TestGenStartStep(Step):
 
     def on_action_fail(self, action, args):
         if action.args_cmd == "install":
-            action.run_cmd("docker", "compose", "-f", action.docker_compose_file_path, "down", "--volumes")
+            action.run_cmd(
+                "docker",
+                "compose",
+                "-f",
+                action.docker_compose_file_path,
+                "down",
+                "--volumes",
+            )
 
 
 class TestGenStopStep(Step):
@@ -1938,7 +2026,6 @@ class TestGenUpgradeDatabaseStep(Step):
 
 
 class TestgenActionMixin:
-
     @property
     def docker_compose_file_path(self):
         compose_path = self.data_folder.joinpath(DOCKER_COMPOSE_FILE)
@@ -1951,13 +2038,13 @@ class TestgenActionMixin:
 
 class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
     steps = [
-        TestGenVerifyExistingInstallStep(),
-        DockerNetworkStep(),
-        TestGenCreateDockerComposeFileStep(),
-        TestGenPullImagesStep(),
-        TestGenStartStep(),
-        TestGenSetupDatabaseStep(),
-        TestGenUpgradeDatabaseStep(),
+        TestGenVerifyExistingInstallStep,
+        DockerNetworkStep,
+        TestGenCreateDockerComposeFileStep,
+        TestGenPullImagesStep,
+        TestGenStartStep,
+        TestGenSetupDatabaseStep,
+        TestGenUpgradeDatabaseStep,
     ]
 
     label = "Installation"
@@ -2016,11 +2103,11 @@ class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
 
 class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
     steps = [
-        UpdateComposeFileStep(),
-        TestGenStopStep(),
-        TestGenPullImagesStep(),
-        TestGenStartStep(),
-        TestGenUpgradeDatabaseStep(),
+        UpdateComposeFileStep,
+        TestGenStopStep,
+        TestGenPullImagesStep,
+        TestGenStartStep,
+        TestGenUpgradeDatabaseStep,
     ]
 
     label = "Upgrade"
@@ -2036,8 +2123,17 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
             REQ_DOCKER_DAEMON,
             Requirement(
                 "TG_COMPOSE_FILE",
-                ("docker", "compose", "-f", str(self.docker_compose_file_path), "config"),
-                ("TestGen's Docker compose file is not available.", "Re-install TestGen and try again.")
+                (
+                    "docker",
+                    "compose",
+                    "-f",
+                    str(self.docker_compose_file_path),
+                    "config",
+                ),
+                (
+                    "TestGen's Docker compose file is not available.",
+                    "Re-install TestGen and try again.",
+                ),
             ),
         ]
 
@@ -2109,7 +2205,13 @@ class TestgenDeleteAction(Action, TestgenActionMixin):
     def _delete_volumes(self):
         if volumes := get_testgen_volumes(self):
             try:
-                self.run_cmd("docker", "volume", "rm", *[v["Name"] for v in volumes], raise_on_non_zero=True)
+                self.run_cmd(
+                    "docker",
+                    "volume",
+                    "rm",
+                    *[v["Name"] for v in volumes],
+                    raise_on_non_zero=True,
+                )
             except CommandFailed:
                 CONSOLE.msg("Could NOT delete docker volumes. Please delete them manually")
                 raise AbortAction
@@ -2231,7 +2333,15 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
 
         for command in cli_commands:
             CONSOLE.msg(f"Running command : docker compose exec engine {' '.join(command)}")
-            self.run_cmd("docker", "compose", "-f", self.docker_compose_file_path, "exec", "engine", *command)
+            self.run_cmd(
+                "docker",
+                "compose",
+                "-f",
+                self.docker_compose_file_path,
+                "exec",
+                "engine",
+                *command,
+            )
 
         CONSOLE.msg("Completed creating demo!")
 
@@ -2274,7 +2384,6 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
 
 
 def show_menu(installer):
-
     cfg_options = {}
 
     def add_config(key, value, msg=None):
@@ -2291,19 +2400,22 @@ def show_menu(installer):
 
     tg_menu = Menu(run_installer, "TestGen")
     tg_menu.add_option("Install TestGen", ["tg", "install"])
-    tg_menu.add_option("Upgrade TestGen", ['tg', 'upgrade'])
-    tg_menu.add_option("Install TestGen demo data", ['tg', 'run-demo'])
-    tg_menu.add_option("Install TestGen demo data with Observability export", ['tg', 'run-demo', '--export'])
-    tg_menu.add_option("Delete TestGen demo data", ['tg', 'delete-demo'])
-    tg_menu.add_option("Uninstall TestGen", ['tg', 'delete'])
+    tg_menu.add_option("Upgrade TestGen", ["tg", "upgrade"])
+    tg_menu.add_option("Install TestGen demo data", ["tg", "run-demo"])
+    tg_menu.add_option(
+        "Install TestGen demo data with Observability export",
+        ["tg", "run-demo", "--export"],
+    )
+    tg_menu.add_option("Delete TestGen demo data", ["tg", "delete-demo"])
+    tg_menu.add_option("Uninstall TestGen", ["tg", "delete"])
 
     obs_menu = Menu(run_installer, "Observability")
-    obs_menu.add_option("Install Observability", ['obs', 'install'])
-    obs_menu.add_option("Upgrade Observability", ['obs', 'upgrade'])
-    obs_menu.add_option("Install Observability demo data", ['obs', 'run-demo'])
-    obs_menu.add_option("Delete Observability demo data", ['obs', 'delete-demo'])
-    obs_menu.add_option("Run heartbeat demo", ['obs', 'run-heartbeat-demo'])
-    obs_menu.add_option("Delete Observability", ['obs', 'delete'])
+    obs_menu.add_option("Install Observability", ["obs", "install"])
+    obs_menu.add_option("Upgrade Observability", ["obs", "upgrade"])
+    obs_menu.add_option("Install Observability demo data", ["obs", "run-demo"])
+    obs_menu.add_option("Delete Observability demo data", ["obs", "delete-demo"])
+    obs_menu.add_option("Run heartbeat demo", ["obs", "run-heartbeat-demo"])
+    obs_menu.add_option("Delete Observability", ["obs", "delete"])
 
     cfg_menu = Menu(add_config, "Configuration")
     cfg_menu.add_option(
@@ -2357,13 +2469,13 @@ if __name__ == "__main__":
     installer = get_installer_instance()
 
     # Show the menu when running from the Windows .exe without arguments
-    if getattr(sys, 'frozen', False) and len(sys.argv) == 1:
+    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
         try:
             output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
         except Exception:
             pass
         else:
-            if 'Pro' not in output:
+            if "Pro" not in output:
                 print("\nWARNING: Your Windows edition is not compatible with Docker.")
 
         show_menu(installer)
