@@ -134,17 +134,6 @@ def generate_password():
     return password
 
 
-def write_credentials_file(folder: pathlib.Path, product, lines):
-    file_path = folder.joinpath(CREDENTIALS_FILE.format(product))
-    try:
-        with open(file_path, "w") as file:
-            file.writelines([f"{text}\n" for text in lines])
-    except Exception:
-        pass
-    else:
-        CONSOLE.msg(f"(Credentials also written to {file_path.name} file)")
-
-
 def delete_file(file_path):
     LOG.debug("Deleting [%s]", file_path.name)
     file_path.unlink(missing_ok=True)
@@ -245,22 +234,6 @@ class Console:
         print(text)
         self._last_is_space = False
 
-    def __enter__(self):
-        print(self.MARGIN, end="")
-        return self
-
-    def send(self, text):
-        print(text, end="")
-        sys.stdout.flush()
-        self._partial_msg += text
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        print("")
-        LOG.info("Console message: [%s]", self._partial_msg)
-        self._partial_msg = ""
-        self._last_is_space = False
-        return False
-
     def print_log(self, log_path: pathlib.Path) -> None:
         with log_path.open() as log_file:
             print("")
@@ -270,6 +243,43 @@ class Console:
                     print(line)
             print("")
             self._last_is_space = True
+
+    @contextlib.contextmanager
+    def partial(self):
+        print(self.MARGIN, end="")
+
+        def console_partial(text):
+            print(text, end="")
+            sys.stdout.flush()
+            self._partial_msg += text
+
+        try:
+            yield console_partial
+        finally:
+            print("")
+            LOG.info("Console message: [%s]", self._partial_msg)
+            self._partial_msg = ""
+            self._last_is_space = False
+
+    @contextlib.contextmanager
+    def tee(self, file_path, append=False):
+        tee_lines = ["" if append else None]
+
+        def console_tee(text, skip_logging=False):
+            tee_lines.append(text)
+            return self.msg(text, skip_logging=skip_logging)
+
+        self.space()
+
+        try:
+            yield console_tee
+        finally:
+            self.space()
+            try:
+                with open(file_path, "a" if append else "w") as file:
+                    file.writelines([f"{text}\n" for text in tee_lines if text is not None])
+            except Exception:
+                LOG.exception("Error tee'ing content to %s", file_path)
 
 
 CONSOLE = Console()
@@ -779,25 +789,25 @@ class MultiStepAction(Action):
         action_fail_step = None
         for step in action_steps:
             executed_steps.append(step)
-            with CONSOLE:
-                CONSOLE.send(f"{step.label}... ")
+            with CONSOLE.partial() as partial:
+                partial(f"{step.label}... ")
                 try:
                     if action_fail_exception:
                         raise SkipStep
                     LOG.debug("Executing step [%s]", step)
                     step.execute(self, args)
                 except SkipStep:
-                    CONSOLE.send("SKIPPED")
+                    partial("SKIPPED")
                     continue
                 except Exception as e:
-                    CONSOLE.send("FAILED")
+                    partial("FAILED")
                     if step.required:
                         action_fail_exception = e
                         action_fail_step = step
                     else:
                         LOG.warning("Non-required step [%s] failed with: %s", step, e)
                 else:
-                    CONSOLE.send("OK")
+                    partial("OK")
 
         if action_fail_exception:
             CONSOLE.title(f"{self.label} FAILED")
@@ -1247,11 +1257,12 @@ class ObsHelmInstallPlatformStep(HelmInstallStep):
             if args.namespace != NAMESPACE:
                 cmd_args.append(f"--namespace={args.namespace}")
 
-            CONSOLE.space()
-            CONSOLE.msg("Because you are using the docker driver on a Mac or Windows, you have to run")
-            CONSOLE.msg("the following command in order to be able to access the platform.")
-            CONSOLE.space()
-            CONSOLE.msg(f"python3 {INSTALLER_NAME} {args.prod} expose {' '.join(cmd_args)}")
+            cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
+            with CONSOLE.tee(cred_file_path, append=True) as console_tee:
+                console_tee("Because you are using the docker driver on a Mac or Windows, you have to run")
+                console_tee("the following command in order to be able to access the platform.")
+                console_tee("")
+                console_tee(f"python3 {INSTALLER_NAME} {args.prod} expose {' '.join(cmd_args)}")
 
         self._collect_images_sha(action, args)
 
@@ -1309,25 +1320,17 @@ class ObsDataInitializationStep(Step):
         )
 
     def on_action_success(self, action, args):
-        info_lines = []
-        if url := action.ctx.get("base_url"):
-            for service, label in SERVICES_LABELS.items():
-                info_lines.append(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
-            info_lines.append("")
+        cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
+        with CONSOLE.tee(cred_file_path) as console_tee:
+            if url := action.ctx.get("base_url"):
+                for service, label in SERVICES_LABELS.items():
+                    console_tee(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
+                console_tee("")
 
-        info_lines.extend(
-            [
-                f"Username: {self._user_data['username']}",
-                f"Password: {self._user_data['password']}",
-                "",
-            ]
-        )
+            console_tee(f"Username: {self._user_data['username']}")
+            console_tee(f"Password: {self._user_data['password']}", skip_logging=True)
 
-        CONSOLE.space()
-        for line in info_lines:
-            CONSOLE.msg(line, skip_logging="Password" in line) if line else CONSOLE.space()
-
-        write_credentials_file(action.data_folder, args.prod, info_lines)
+        CONSOLE.msg(f"(Credentials also written to {cred_file_path.name} file)")
 
 
 class ObsGenerateDemoConfigStep(Step):
@@ -1690,7 +1693,7 @@ class UpdateComposeFileStep(Step):
 
         contents = action.docker_compose_file_path.read_text()
         if self.update_version:
-            contents = re.sub(r"(image:\s*datakitchen.+:).+\n", fr"\1{TESTGEN_LATEST_TAG}\n", contents)
+            contents = re.sub(r"(image:\s*datakitchen.+:).+\n", rf"\1{TESTGEN_LATEST_TAG}\n", contents)
 
         if self.update_analytics:
             if args.send_analytics_data:
@@ -1713,7 +1716,7 @@ class UpdateComposeFileStep(Step):
         if self.update_token:
             match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
             var = f"\n{match.group(1)}TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}"
-            contents = contents[0:match.end()] + match.group(1) + var + contents[match.end():]
+            contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
 
         action.docker_compose_file_path.write_text(contents)
 
@@ -1773,17 +1776,15 @@ class TestGenCreateDockerComposeFileStep(Step):
             CONSOLE.msg(f"Created new {DOCKER_COMPOSE_FILE} file using image {args.image}")
 
         protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
-        info_lines = [
-            f"User Interface: {protocol}://localhost:{args.port}",
-            "CLI Access: docker compose exec engine bash",
-            "",
-            f"Username: {self.username}",
-            f"Password: {self.password}",
-        ]
-        CONSOLE.space()
-        for line in info_lines:
-            CONSOLE.msg(line, skip_logging="Password" in line)
-        write_credentials_file(action.data_folder, args.prod, info_lines)
+        cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
+        with CONSOLE.tee(cred_file_path) as console_tee:
+            console_tee(f"User Interface: {protocol}://localhost:{args.port}")
+            console_tee("CLI Access: docker compose exec engine bash")
+            console_tee("")
+            console_tee(f"Username: {self.username}")
+            console_tee(f"Password: {self.password}")
+
+        CONSOLE.msg(f"(Credentials also written to {cred_file_path.name} file)")
 
     def on_action_fail(self, action, args):
         # We keep the file around for inspection when in debug mode
@@ -1834,7 +1835,7 @@ class TestGenCreateDockerComposeFileStep(Step):
               TESTGEN_PASSWORD: {password}
               TG_DECRYPT_SALT: {generate_password()}
               TG_DECRYPT_PASSWORD: {generate_password()}
-              TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}
+              TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), "ascii")}
               TG_METADATA_DB_HOST: postgres
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
@@ -2378,6 +2379,19 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
             raise AbortAction
 
 
+class AccessInstructionsAction(Action):
+    args_cmd = "access-info"
+
+    def execute(self, args):
+        try:
+            info = self.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod)).read_text()
+        except Exception:
+            CONSOLE.msg("No Access Information found. Is the platform installed?")
+        else:
+            for line in info.splitlines():
+                CONSOLE.msg(line)
+
+
 #
 # Entrypoint
 #
@@ -2401,6 +2415,7 @@ def show_menu(installer):
     tg_menu = Menu(run_installer, "TestGen")
     tg_menu.add_option("Install TestGen", ["tg", "install"])
     tg_menu.add_option("Upgrade TestGen", ["tg", "upgrade"])
+    tg_menu.add_option("Access Instructions", ["tg", "access-info"])
     tg_menu.add_option("Install TestGen demo data", ["tg", "run-demo"])
     tg_menu.add_option(
         "Install TestGen demo data with Observability export",
@@ -2412,10 +2427,12 @@ def show_menu(installer):
     obs_menu = Menu(run_installer, "Observability")
     obs_menu.add_option("Install Observability", ["obs", "install"])
     obs_menu.add_option("Upgrade Observability", ["obs", "upgrade"])
+    obs_menu.add_option("Access Instructions", ["obs", "access-info"])
+    obs_menu.add_option("Expose web access", ["obs", "expose"])
     obs_menu.add_option("Install Observability demo data", ["obs", "run-demo"])
     obs_menu.add_option("Delete Observability demo data", ["obs", "delete-demo"])
     obs_menu.add_option("Run heartbeat demo", ["obs", "run-heartbeat-demo"])
-    obs_menu.add_option("Delete Observability", ["obs", "delete"])
+    obs_menu.add_option("Uninstall Observability", ["obs", "delete"])
 
     cfg_menu = Menu(add_config, "Configuration")
     cfg_menu.add_option(
@@ -2445,6 +2462,7 @@ def get_installer_instance():
         [
             ObsInstallAction(),
             ObsExposeAction(),
+            AccessInstructionsAction(),
             ObsDeleteAction(),
             ObsRunDemoAction(),
             ObsDeleteDemoAction(),
@@ -2457,6 +2475,7 @@ def get_installer_instance():
         [
             TestgenInstallAction(),
             TestgenUpgradeAction(),
+            AccessInstructionsAction(),
             TestgenDeleteAction(),
             TestgenRunDemoAction(),
             TestgenDeleteDemoAction(),
