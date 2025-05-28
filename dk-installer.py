@@ -27,8 +27,7 @@ import time
 import urllib.request
 import urllib.parse
 import zipfile
-
-
+import typing
 #
 # Initial setup
 #
@@ -288,7 +287,7 @@ CONSOLE = Console()
 @dataclasses.dataclass
 class Requirement:
     key: str
-    cmd: tuple[str, ...]
+    cmd: tuple[typing.Union[str, pathlib.Path], ...]
     fail_msg: tuple[str, ...]
 
     def check_availability(self, action, args):
@@ -316,9 +315,9 @@ class CommandFailed(Exception):
 
     def __init__(
         self,
-        idx: int | None = None,
-        cmd: str | None = None,
-        ret_code: int | None = None,
+        idx: typing.Union[int, None] = None,
+        cmd: typing.Union[str, None] = None,
+        ret_code: typing.Union[int, None] = None,
     ):
         if any((idx, cmd, ret_code)) and not all((idx, cmd)):
             raise ValueError(f"{self.__class__.__name__} requires 'idx' and 'cmd' to be set unless all args are None.")
@@ -344,7 +343,7 @@ class AnalyticsWrapper:
         self.action = action
         self.args = args
 
-    def _hash_value(self, value: bytes | str, digest_size: int = 8) -> str:
+    def _hash_value(self, value: typing.Union[bytes, str], digest_size: int = 8) -> str:
         if isinstance(value, str):
             value = value.encode()
         return hashlib.blake2b(value, salt=self.get_instance_id().encode(), digest_size=digest_size).hexdigest()
@@ -527,7 +526,7 @@ class Action:
 
     def _get_failed_cmd_log_file_path(
         self, exception: Exception
-    ) -> tuple[CommandFailed, pathlib.Path] | tuple[None, None]:
+    ) -> typing.Union[tuple[CommandFailed, pathlib.Path], tuple[None, None]]:
         while exception:
             if isinstance(exception, CommandFailed):
                 break
@@ -2439,7 +2438,7 @@ def show_menu(installer):
         "Disable sending analytics data",
         key="send_analytics_data",
         value="--no-analytics",
-        msg="Sending analytcs data has been disabled for this session.",
+        msg="Sending analytics data has been disabled for this session.",
     )
     cfg_menu.add_option(
         "Enable sending analytics data",
