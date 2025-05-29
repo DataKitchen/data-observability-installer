@@ -1,0 +1,49 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [ main ]
+
+  workflow_dispatch:
+
+jobs:
+  ruff:
+    name: Lint with ruff
+    uses: ./.github/workflows/python-job.yml
+    with:
+      run: |
+        ruff check --show-fixes
+        ruff format --check --diff
+
+    secrets: inherit
+
+  test:
+    name: Run tests
+    uses: ./.github/workflows/python-job.yml
+    with:
+      run: |
+        set -o pipefail
+        mkdir reports
+        pytest --junit-xml=reports/pytest.xml --cov --cov-report=term-missing:skip-covered | tee reports/coverage.txt
+      artifact: pytest-results
+      artifact_path: reports/
+    secrets: inherit
+
+  report-coverage:
+    name: Report tests coverage
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
+    needs: [test]
+    steps:
+      - name: Download Pytest results
+        uses: actions/download-artifact@v4
+        with:
+          name: pytest-results
+          path: reports
+
+      - name: Add PR comment
+        uses: MishaKav/pytest-coverage-comment@main
+        with:
+          junitxml-path: reports/pytest.xml
+          pytest-coverage-path: reports/coverage.txt
+          report-only-changed-files: true
