@@ -1,6 +1,4 @@
-import json
 from functools import partial
-from pathlib import Path
 from unittest.mock import call, patch
 
 import pytest
@@ -15,15 +13,6 @@ def tg_run_demo_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
     args_mock.action = "run-demo"
     with patch.object(action, "execute", new=partial(action.execute, args_mock)):
         yield action
-
-
-@pytest.fixture
-def demo_config_path(tmp_data_folder):
-    path = Path(tmp_data_folder).joinpath("demo-config.json")
-    config = {"api_host": "demo-api-host", "api_key": "demo-api-key"}
-    path.write_text(json.dumps(config))
-    yield path
-    path.unlink()
 
 
 @pytest.mark.integration

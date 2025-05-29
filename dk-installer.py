@@ -1501,7 +1501,6 @@ class ObsExposeAction(Action):
                 except KeyboardInterrupt:
                     # The empty print forces the terminal cursor to move to the first column
                     print()
-                    pass
 
                 proc.terminate()
 

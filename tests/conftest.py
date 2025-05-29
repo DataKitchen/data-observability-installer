@@ -1,3 +1,4 @@
+import json
 from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
@@ -78,8 +79,14 @@ def analytics_mock():
 
 
 @pytest.fixture
-def execute_mock(action):
-    with patch.object(action, "execute") as mock:
+def execute_mock(action_cls):
+    with patch.object(action_cls, "execute") as mock:
+        yield mock
+
+
+@pytest.fixture
+def execute_with_log_mock(action_cls):
+    with patch.object(action_cls, "execute_with_log") as mock:
         yield mock
 
 
@@ -90,6 +97,15 @@ def tmp_data_folder(action_cls):
         patch.object(action_cls, "data_folder", new=Path(data_folder), create=True),
     ):
         yield data_folder
+
+
+@pytest.fixture
+def demo_config_path(tmp_data_folder):
+    path = Path(tmp_data_folder).joinpath("demo-config.json")
+    config = {"api_host": "demo-api-host", "api_key": "demo-api-key"}
+    path.write_text(json.dumps(config))
+    yield path
+    path.unlink()
 
 
 @pytest.fixture
@@ -143,5 +159,15 @@ def args_mock():
     ns.keep_config = False
     ns.obs_export = False
     ns.skip_verify = False
+
+    # Observability defaults
+    ns.profile = "dk-observability"
+    ns.namespace = "datakitchen"
+    ns.driver = "docker"
+    ns.memory = "4096m"
+    ns.helm_timeout = 10
+    ns.app_values = None
+    ns.docker_username = None
+    ns.docker_password = None
 
     yield ns
