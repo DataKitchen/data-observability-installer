@@ -4,7 +4,7 @@ from unittest.mock import call, patch
 
 import pytest
 
-from tests.installer import ObsExposeAction
+from tests.installer import ObsExposeAction, CommandFailed, AbortAction
 
 
 @pytest.fixture
@@ -55,3 +55,11 @@ def test_obs_expose(obs_expose_action, start_cmd_mock, stdout_mock, proc_mock, d
         ],
         any_order=True,
     )
+
+
+@pytest.mark.integration
+def test_obs_expose_abort(obs_expose_action, start_cmd_mock):
+    start_cmd_mock.__exit__.side_effect = CommandFailed
+
+    with pytest.raises(AbortAction):
+        obs_expose_action.execute()

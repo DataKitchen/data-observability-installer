@@ -750,7 +750,7 @@ class Step:
         pass
 
     def __str__(self):
-        return self.label or self.__name__
+        return self.label or self.__class__.__name__
 
 
 class MultiStepAction(Action):
@@ -783,11 +783,9 @@ class MultiStepAction(Action):
 
         self._print_intro_text(args)
         CONSOLE.space()
-        executed_steps: list[Step] = []
         action_fail_exception = None
         action_fail_step = None
         for step in action_steps:
-            executed_steps.append(step)
             with CONSOLE.partial() as partial:
                 partial(f"{step.label}... ")
                 try:
@@ -813,7 +811,7 @@ class MultiStepAction(Action):
         else:
             CONSOLE.title(f"{self.label} SUCCEEDED")
 
-        for step in reversed(executed_steps):
+        for step in reversed(action_steps):
             try:
                 if action_fail_exception is None:
                     LOG.debug("Running [%s] on-action-success", step)

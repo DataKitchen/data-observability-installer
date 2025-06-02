@@ -100,6 +100,15 @@ def tmp_data_folder(action_cls):
 
 
 @pytest.fixture
+def tmp_logs_folder(action_cls):
+    with (
+        TemporaryDirectory() as data_folder,
+        patch.object(action_cls, "logs_folder", new=Path(data_folder), create=True),
+    ):
+        yield data_folder
+
+
+@pytest.fixture
 def demo_config_path(tmp_data_folder):
     path = Path(tmp_data_folder).joinpath("demo-config.json")
     config = {"api_host": "demo-api-host", "api_key": "demo-api-key"}
