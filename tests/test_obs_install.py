@@ -1,4 +1,5 @@
 from functools import partial
+from itertools import count
 from pathlib import Path
 from unittest.mock import call, patch
 
@@ -12,25 +13,27 @@ def obs_install_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
     action = ObsInstallAction()
     args_mock.prod = "obs"
     args_mock.action = "install"
-    with patch.object(action, "execute", new=partial(action.execute, args_mock)):
+    with (
+        patch.object(action, "execute", new=partial(action.execute, args_mock)),
+        patch("platform.system", return_value="Linux"),
+    ):
         yield action
 
 
 @pytest.mark.integration
 def test_obs_install(obs_install_action, start_cmd_mock, tmp_data_folder, stdout_mock):
-    stdout_mock.side_effect = (
-        [b"{}"],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-        [b'{"service_account_key": "demo-account-key", "project_id": "test-project-id"}'],
-        [],
-        [],
-    )
+    def _stdout_side_effect():
+        for idx in count():
+            if idx == 0:
+                yield [b"{}"]
+            elif idx == 7:
+                yield [b'[{"Name": "observability-ui", "URLs": ["http://localhost:8501"]}]']
+            elif idx == 8:
+                yield [b'{"service_account_key": "demo-account-key", "project_id": "test-project-id"}']
+            else:
+                yield []
 
+    stdout_mock.side_effect = iter(_stdout_side_effect())
     obs_install_action.execute()
 
     def_call = partial(call, raise_on_non_zero=True, env=None)

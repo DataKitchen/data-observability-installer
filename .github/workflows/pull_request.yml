@@ -24,7 +24,7 @@ jobs:
       run: |
         set -o pipefail
         mkdir reports
-        pytest --junit-xml=reports/pytest.xml --cov --cov-report=term-missing:skip-covered | tee reports/coverage.txt
+        pytest --junit-xml=reports/pytest.xml --cov  --cov-report=term-missing | tee reports/coverage.txt
       artifact: pytest-results
       artifact_path: reports/
     secrets: inherit
