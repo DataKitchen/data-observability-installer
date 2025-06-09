@@ -2485,13 +2485,8 @@ if __name__ == "__main__":
 
     # Show the menu when running from the Windows .exe without arguments
     if getattr(sys, "frozen", False) and len(sys.argv) == 1:
-        try:
-            output = subprocess.check_output('systeminfo | findstr /B /C:"OS Name"', shell=True, text=True)
-        except Exception:
-            pass
-        else:
-            if "Pro" not in output:
-                print("\nWARNING: Your Windows edition is not compatible with Docker.")
+        if platform.win32_edition() == "Core":
+            print("\nWARNING: Your Windows edition is not compatible with Docker.")
 
         show_menu(installer)
     else:
