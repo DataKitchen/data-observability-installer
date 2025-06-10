@@ -65,7 +65,7 @@ def test_tg_upgrade_compose_missing(tg_upgrade_action, args_mock, start_cmd_mock
     with pytest.raises(AbortAction, match=""):
         tg_upgrade_action._check_requirements(args_mock)
 
-    console_msg_mock.assert_any_msg_contains("TestGen's Docker compose file is not available")
+    console_msg_mock.assert_any_msg_contains("TestGen's Docker configuration file is not available")
 
 
 @pytest.mark.integration
