@@ -447,12 +447,6 @@ class Action:
     def init_session_folder(self, prefix):
         if "Windows" == platform.system():
             self.data_folder = pathlib.Path(os.environ["LOCALAPPDATA"], "DataKitchenApps")
-            try:
-                # For backward compatibility - move the old folder to the new path
-                old_folder = pathlib.Path("~", "Documents", "DataKitchenApps").expanduser()
-                old_folder.rename(self.data_folder)
-            except Exception:
-                pass
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
             self.data_folder = pathlib.Path(sys.argv[0]).absolute().parent
@@ -2131,7 +2125,7 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
                     "config",
                 ),
                 (
-                    f"TestGen's Docker compose file is not available at {self.data_folder.joinpath(self.docker_compose_file_path)}.",
+                    f"TestGen's Docker configuration file is not available at {self.data_folder.joinpath(self.docker_compose_file_path)}.",
                     "Re-install TestGen and try again.",
                 ),
             ),
@@ -2386,7 +2380,8 @@ class AccessInstructionsAction(Action):
         try:
             info = credendials_path.read_text()
         except Exception:
-            CONSOLE.msg(f"No Access Information found in {credendials_path}. Is the platform installed?")
+            product = "TestGen" if args.prod == "tg" else "Observability"
+            CONSOLE.msg(f"No {product} access information found in {credendials_path}. Is {product} installed?")
         else:
             for line in info.splitlines():
                 CONSOLE.msg(line)
@@ -2415,7 +2410,7 @@ def show_menu(installer):
     tg_menu = Menu(run_installer, "TestGen")
     tg_menu.add_option("Install TestGen", ["tg", "install"])
     tg_menu.add_option("Upgrade TestGen", ["tg", "upgrade"])
-    tg_menu.add_option("Access Instructions", ["tg", "access-info"])
+    tg_menu.add_option("Access Installed App", ["tg", "access-info"])
     tg_menu.add_option("Install TestGen demo data", ["tg", "run-demo"])
     tg_menu.add_option(
         "Install TestGen demo data with Observability export",
@@ -2427,7 +2422,7 @@ def show_menu(installer):
     obs_menu = Menu(run_installer, "Observability")
     obs_menu.add_option("Install Observability", ["obs", "install"])
     obs_menu.add_option("Upgrade Observability", ["obs", "upgrade"])
-    obs_menu.add_option("Access Instructions", ["obs", "access-info"])
+    obs_menu.add_option("Access Installed App", ["obs", "access-info"])
     obs_menu.add_option("Expose web access", ["obs", "expose"])
     obs_menu.add_option("Install Observability demo data", ["obs", "run-demo"])
     obs_menu.add_option("Delete Observability demo data", ["obs", "delete-demo"])
@@ -2487,11 +2482,20 @@ def get_installer_instance():
 if __name__ == "__main__":
     installer = get_installer_instance()
 
-    # Show the menu when running from the Windows .exe without arguments
-    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
+    if platform.system() == "Windows":
         if platform.win32_edition() == "Core":
             print("\nWARNING: Your Windows edition is not compatible with Docker.")
 
+        # For backward compatibility - move the old folder to the new path
+        try:
+            new_folder = pathlib.Path(os.environ["LOCALAPPDATA"], "DataKitchenApps")
+            old_folder = pathlib.Path("~", "Documents", "DataKitchenApps").expanduser()
+            old_folder.rename(new_folder)
+        except Exception:
+            pass
+
+    # Show the menu when running from the Windows .exe without arguments
+    if getattr(sys, "frozen", False) and len(sys.argv) == 1:
         show_menu(installer)
     else:
         sys.exit(installer.run())
