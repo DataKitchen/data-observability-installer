@@ -446,10 +446,13 @@ class Action:
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
         if "Windows" == platform.system():
+            self.data_folder = pathlib.Path(os.environ["LOCALAPPDATA"], "DataKitchenApps")
             try:
-                self.data_folder = pathlib.Path(os.environ["LOCALAPPDATA"], "DataKitchenApps")
-            except KeyError:
-                self.data_folder = pathlib.Path("~", "Documents", "DataKitchenApps").expanduser()
+                # For backward compatibility - move the old folder to the new path
+                old_folder = pathlib.Path("~", "Documents", "DataKitchenApps").expanduser()
+                old_folder.rename(self.data_folder)
+            except Exception:
+                pass
             self.logs_folder = self.data_folder.joinpath("logs")
         else:
             self.data_folder = pathlib.Path(sys.argv[0]).absolute().parent
@@ -2128,7 +2131,7 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
                     "config",
                 ),
                 (
-                    "TestGen's Docker compose file is not available.",
+                    f"TestGen's Docker compose file is not available at {self.data_folder.joinpath(self.docker_compose_file_path)}.",
                     "Re-install TestGen and try again.",
                 ),
             ),
@@ -2379,10 +2382,11 @@ class AccessInstructionsAction(Action):
     args_cmd = "access-info"
 
     def execute(self, args):
+        credendials_path = self.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
         try:
-            info = self.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod)).read_text()
+            info = credendials_path.read_text()
         except Exception:
-            CONSOLE.msg("No Access Information found. Is the platform installed?")
+            CONSOLE.msg(f"No Access Information found in {credendials_path}. Is the platform installed?")
         else:
             for line in info.splitlines():
                 CONSOLE.msg(line)
