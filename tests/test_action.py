@@ -127,7 +127,7 @@ def test_run_cmd_retries(action, start_cmd_mock, proc_mock):
 
     assert start_cmd_mock.call_count == 4
     assert proc_mock.wait.call_count == 4
-    start_cmd_mock.assert_called_with("cmd", env=None)
+    start_cmd_mock.assert_called_with("cmd", env=None, raise_on_non_zero=True)
     proc_mock.kill.assert_called_once_with()
     proc_mock.wait.assert_called_with(timeout=5)
 

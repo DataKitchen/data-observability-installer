@@ -613,7 +613,7 @@ class Action:
         cmd_fail_exception = None
         while retries > 0:
             try:
-                with self.start_cmd(*cmd, env=env, **popen_args) as (proc, *_):
+                with self.start_cmd(*cmd, raise_on_non_zero=raise_on_non_zero, env=env, **popen_args) as (proc, *_):
                     try:
                         proc.wait(timeout=timeout)
                     except subprocess.TimeoutExpired as e:

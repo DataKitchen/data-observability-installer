@@ -80,7 +80,7 @@ def test_tg_upgrade(tg_upgrade_action, compose_path, start_cmd_mock, tg_upgrade_
         [
             call(*compose_args, "exec", "engine", "testgen", "--help", **compose_kwargs),
             call(*compose_args, "down", **compose_kwargs),
-            call(*compose_args, "pull", "--policy", "always", env=None),
+            call(*compose_args, "pull", "--policy", "always", raise_on_non_zero=True, env=None),
             call(*compose_args, "up", "--wait", **compose_kwargs),
             call(*compose_args, "exec", "engine", "testgen", "upgrade-system-version", **compose_kwargs),
         ],

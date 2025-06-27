@@ -25,7 +25,7 @@ def tg_install_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
 def test_tg_install(tg_install_action, start_cmd_mock, stdout_mock, tmp_data_folder, compose_path):
     tg_install_action.execute()
 
-    docker_call_retry = partial(call, "docker", "compose", "-f", compose_path, env=None)
+    docker_call_retry = partial(call, "docker", "compose", "-f", compose_path, raise_on_non_zero=True, env=None)
     docker_call = partial(docker_call_retry, raise_on_non_zero=True)
 
     start_cmd_mock.assert_has_calls(
