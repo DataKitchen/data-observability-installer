@@ -993,7 +993,7 @@ REQ_TESTGEN_IMAGE = Requirement(
     "TESTGEN_IMAGE",
     ("docker", "manifest", "inspect", "{image}"),
     (
-        "The Docker engine could not access the TestGen's image.",
+        "The Docker engine could not access TestGen's image.",
         "Make sure your networking policy allows Docker to pull the {image} image.",
     ),
 )
