@@ -60,7 +60,7 @@ def get_compose_content(*extra_vars):
 
 @pytest.mark.integration
 def test_tg_upgrade_compose_missing(tg_upgrade_action, args_mock, start_cmd_mock, console_msg_mock):
-    start_cmd_mock.__exit__.side_effect = [None, None, CommandFailed]
+    start_cmd_mock.__exit__.side_effect = [None, None, None, CommandFailed]
 
     with pytest.raises(AbortAction, match=""):
         tg_upgrade_action._check_requirements(args_mock)
