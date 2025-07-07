@@ -986,8 +986,16 @@ REQ_DOCKER = Requirement(
 )
 REQ_DOCKER_DAEMON = Requirement(
     "DOCKER_ENGINE",
-    ("docker", "info"),
+    ("docker", "system", "events", "--since=0m", "--until=0m"),
     ("The Docker engine is not running.", "Start the Docker engine and try again."),
+)
+REQ_TESTGEN_IMAGE = Requirement(
+    "TESTGEN_IMAGE",
+    ("docker", "manifest", "inspect", "{image}"),
+    (
+        "The Docker engine could not access TestGen's image.",
+        "Make sure your networking policy allows Docker to pull the {image} image.",
+    ),
 )
 
 
@@ -2046,7 +2054,7 @@ class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
     intro_text = ["This process may take 5~10 minutes depending on your system resources and network speed."]
 
     args_cmd = "install"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_IMAGE]
 
     def __init__(self):
         super().__init__()
@@ -2115,6 +2123,7 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
         return [
             REQ_DOCKER,
             REQ_DOCKER_DAEMON,
+            REQ_TESTGEN_IMAGE,
             Requirement(
                 "TG_COMPOSE_FILE",
                 (
