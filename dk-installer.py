@@ -77,6 +77,7 @@ TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 5
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
+TESTGEN_LATEST_VERSIONS_URL = "https://dk-support-external.s3.us-east-1.amazonaws.com/testgen-observability/testgen-latest-versions.json"
 
 MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
 MIXPANEL_URL = "https://api.mixpanel.com"
@@ -1645,6 +1646,7 @@ class UpdateComposeFileStep(Step):
 
         CONSOLE.space()
 
+        contents = action.docker_compose_file_path.read_text()
         if not args.skip_verify:
             try:
                 output = action.run_cmd(
@@ -1658,9 +1660,20 @@ class UpdateComposeFileStep(Step):
                     "--help",
                     capture_text=True,
                 )
-                match = re.search(r"This version:(.*)\s+Latest version:(.*)\s", output)
-                current_version = match.group(1)
-                latest_version = match.group(2)
+                version_match = re.search(r"TestGen\s([0-9.]*)", output)
+                current_version = version_match.group(1)
+
+                image_match = re.search(r"image:\s*(datakitchen.+):.+\n", contents)
+                docker_image = image_match.group(1)
+                latest_version = "unknown"
+                
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                resp = urllib.request.urlopen(TESTGEN_LATEST_VERSIONS_URL, timeout=3, context=ssl_context)
+                if resp.code == 200:
+                    json_data = json.loads(resp.read().decode('utf-8'))
+                    latest_version = json_data.get("docker", {}).get(docker_image)
             except Exception:
                 CONSOLE.msg("Current version: unknown")
                 CONSOLE.msg("Latest version: unknown")
@@ -1674,7 +1687,6 @@ class UpdateComposeFileStep(Step):
                 else:
                     CONSOLE.msg("Application is already up-to-date.")
 
-        contents = action.docker_compose_file_path.read_text()
         if args.send_analytics_data:
             self.update_analytics = "TG_INSTANCE_ID" not in contents
         else:
