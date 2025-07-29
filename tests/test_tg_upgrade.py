@@ -46,7 +46,6 @@ def get_compose_content(*extra_vars):
           TG_METADATA_DB_HOST: postgres
           TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
           TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
-          TG_DOCKER_RELEASE_CHECK_ENABLED: yes
         {}
 
         services:

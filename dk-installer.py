@@ -1840,7 +1840,6 @@ class TestGenCreateDockerComposeFileStep(Step):
               TG_METADATA_DB_HOST: postgres
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
-              TG_DOCKER_RELEASE_CHECK_ENABLED: yes
               TG_INSTANCE_ID: {action.analytics.get_instance_id()}
               TG_ANALYTICS: {"yes" if args.send_analytics_data else "no"}
               {ssl_variables}
@@ -2123,7 +2122,6 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
         return [
             REQ_DOCKER,
             REQ_DOCKER_DAEMON,
-            REQ_TESTGEN_IMAGE,
             Requirement(
                 "TG_COMPOSE_FILE",
                 (
