@@ -73,6 +73,12 @@ def stream_iter_mock():
 
 
 @pytest.fixture
+def version_check_mock():
+    with patch("urllib.request.urlopen") as mock:
+        yield mock
+
+
+@pytest.fixture
 def analytics_mock():
     with patch("tests.installer.AnalyticsWrapper") as mock:
         yield mock
