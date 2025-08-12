@@ -23,22 +23,13 @@ def test_tg_run_demo(obs_export, tg_run_demo_action, args_mock, start_cmd_mock, 
 
     compose_args = ("docker", "compose", "-f", compose_path, "exec", "engine", "testgen")
     kwargs = dict(raise_on_non_zero=True, env=None)
-    expected_calls = [
-        call(*compose_args, "run-profile", "--table-group-id", "0ea85e17-acbe-47fe-8394-9970725ad37d", **kwargs),
-        call(
-            *compose_args, "run-test-generation", "--table-group-id", "0ea85e17-acbe-47fe-8394-9970725ad37d", **kwargs
-        ),
-        call(*compose_args, "run-tests", "--project-key", "DEFAULT", "--test-suite-key", "default-suite-1", **kwargs),
-        call(*compose_args, "quick-start", "--simulate-fast-forward", **kwargs),
-    ]
 
     if obs_export:
         demo_cfg_path = request.getfixturevalue("demo_config_path")
-        expected_calls += [
+        expected_calls = [
             call(
                 *compose_args,
                 "quick-start",
-                "--delete-target-db",
                 "--observability-api-url",
                 "demo-api-host",
                 "--observability-api-key",
@@ -71,8 +62,8 @@ def test_tg_run_demo(obs_export, tg_run_demo_action, args_mock, start_cmd_mock, 
             ),
         ]
     else:
-        expected_calls += [
-            call(*compose_args, "quick-start", "--delete-target-db", **kwargs),
+        expected_calls = [
+            call(*compose_args, "quick-start", **kwargs),
         ]
 
     tg_run_demo_action.execute()
