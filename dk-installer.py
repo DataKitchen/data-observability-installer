@@ -2309,7 +2309,6 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
         quick_start_command = [
             "testgen",
             "quick-start",
-            "--delete-target-db",
         ]
         if args.obs_export:
             with open(self.data_folder / DEMO_CONFIG_FILE, "r") as file:
@@ -2326,41 +2325,7 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
 
         cli_commands = [
             quick_start_command,
-            [
-                "testgen",
-                "run-profile",
-                "--table-group-id",
-                "0ea85e17-acbe-47fe-8394-9970725ad37d",
-            ],
-            [
-                "testgen",
-                "run-test-generation",
-                "--table-group-id",
-                "0ea85e17-acbe-47fe-8394-9970725ad37d",
-            ],
-            [
-                "testgen",
-                "run-tests",
-                "--project-key",
-                "DEFAULT",
-                "--test-suite-key",
-                "default-suite-1",
-            ],
         ]
-        if args.obs_export:
-            cli_commands.append(
-                [
-                    "testgen",
-                    "export-observability",
-                    "--project-key",
-                    "DEFAULT",
-                    "--test-suite-key",
-                    "default-suite-1",
-                ]
-            )
-
-        cli_commands.append(["testgen", "quick-start", "--simulate-fast-forward"])
-
         if args.obs_export:
             cli_commands.append(
                 [
