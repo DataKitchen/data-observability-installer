@@ -1,3 +1,4 @@
+import json
 import textwrap
 from unittest.mock import call
 
@@ -18,14 +19,14 @@ def tg_upgrade_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock, re
 def tg_upgrade_stdout_side_effect(stdout_mock):
     side_effect = [
         # Pre-execute calls
-        [b"This version: 1.0.0\n", b"Latest version: 1.1.0\n"],  # Version check
+        [b"TestGen 1.0.0\n"],  # Version check
         # Execute calls
         [],  # Down
         [],  # Pull
         [],  # Up
         [],  # Upgrade DB
         # Post-execute calls
-        [b"This version: 1.1.0\n", b"Latest version: 1.1.0\n"],  # Confirmation version check
+        [b"TestGen 1.1.0\n"],  # Confirmation version check
         [b"[]"],  # Image data collection
     ]
 
@@ -57,9 +58,15 @@ def get_compose_content(*extra_vars):
     return template.format(textwrap.indent("\n".join(extra_vars), "  "))
 
 
+def set_version_check_mock(version_check_mock, latest_version):
+    version_check_mock.return_value.code = 200
+    version_values = { "docker": {"datakitchen/dataops-testgen": latest_version } }
+    version_check_mock.return_value.read.return_value = json.dumps(version_values).encode("utf-8")
+
+
 @pytest.mark.integration
 def test_tg_upgrade_compose_missing(tg_upgrade_action, args_mock, start_cmd_mock, console_msg_mock):
-    start_cmd_mock.__exit__.side_effect = [None, None, None, CommandFailed]
+    start_cmd_mock.__exit__.side_effect = [None, None, CommandFailed]
 
     with pytest.raises(AbortAction, match=""):
         tg_upgrade_action._check_requirements(args_mock)
@@ -68,7 +75,22 @@ def test_tg_upgrade_compose_missing(tg_upgrade_action, args_mock, start_cmd_mock
 
 
 @pytest.mark.integration
-def test_tg_upgrade(tg_upgrade_action, compose_path, start_cmd_mock, tg_upgrade_stdout_side_effect, args_mock):
+@pytest.mark.parametrize(
+    "skip_verify, latest_version",
+    ((True, "1.0.0"), (False, "1.1.0")),
+)
+def test_tg_upgrade(
+    skip_verify,
+    latest_version,
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    args_mock.skip_verify = skip_verify
+    set_version_check_mock(version_check_mock, latest_version)
     compose_path.write_text(get_compose_content())
 
     tg_upgrade_action.execute(args_mock)
@@ -93,21 +115,16 @@ def test_tg_upgrade(tg_upgrade_action, compose_path, start_cmd_mock, tg_upgrade_
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    "skip_verify, latest_version",
-    ((True, b"1.0.0"), (True, b"1.1.0"), (False, b"1.0.0")),
-)
 def test_tg_upgrade_abort(
-    skip_verify,
-    latest_version,
     tg_upgrade_action,
     compose_path,
     start_cmd_mock,
     tg_upgrade_stdout_side_effect,
     args_mock,
+    version_check_mock,
 ):
-    args_mock.skip_verify = skip_verify
-    tg_upgrade_stdout_side_effect[0][1] = b"Latest version: %b\n" % latest_version
+    args_mock.skip_verify = False
+    set_version_check_mock(version_check_mock, "1.0.0")
     initial_compose_content = get_compose_content("TG_INSTANCE_ID: test-instance-id")
     compose_path.write_text(initial_compose_content)
 
@@ -116,7 +133,7 @@ def test_tg_upgrade_abort(
 
     compose_content = compose_path.read_text()
     assert compose_content == initial_compose_content
-    assert start_cmd_mock.call_count == 0 if skip_verify else 1
+    assert start_cmd_mock.call_count == 1
 
 
 @pytest.mark.integration
@@ -130,8 +147,9 @@ def test_tg_upgrade_enable_analytics(
     args_mock,
     console_msg_mock,
     analytics_mock,
+    version_check_mock,
 ):
-    tg_upgrade_stdout_side_effect[0][1] = b"Latest version: 1.0.0\n"
+    set_version_check_mock(version_check_mock, "1.0.0")
     compose_path.write_text(get_compose_content("TG_ANALYTICS: no" if re_enable else ""))
     analytics_mock.get_instance_id.return_value = "test-instance-id"
 
@@ -153,9 +171,10 @@ def test_tg_upgrade_disable_analytics(
     tg_upgrade_stdout_side_effect,
     args_mock,
     console_msg_mock,
+    version_check_mock,
 ):
     args_mock.send_analytics_data = False
-    tg_upgrade_stdout_side_effect[0][1] = b"Latest version: 1.0.0\n"
+    set_version_check_mock(version_check_mock, "1.0.0")
     compose_path.write_text(
         get_compose_content("TG_INSTANCE_ID: test-instance-id", "TG_ANALYTICS: yes" if explicitly_enabled else "")
     )

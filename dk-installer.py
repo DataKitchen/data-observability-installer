@@ -77,7 +77,9 @@ TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 5
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
-TESTGEN_LATEST_VERSIONS_URL = "https://dk-support-external.s3.us-east-1.amazonaws.com/testgen-observability/testgen-latest-versions.json"
+TESTGEN_LATEST_VERSIONS_URL = (
+    "https://dk-support-external.s3.us-east-1.amazonaws.com/testgen-observability/testgen-latest-versions.json"
+)
 
 MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
 MIXPANEL_URL = "https://api.mixpanel.com"
@@ -1636,7 +1638,7 @@ class UpdateComposeFileStep(Step):
     label = "Updating the Docker compose file"
 
     def __init__(self):
-        self.update_version = None
+        self.update_version = False
         self.update_analytics = False
         self.update_token = False
         super().__init__()
@@ -1647,7 +1649,9 @@ class UpdateComposeFileStep(Step):
         CONSOLE.space()
 
         contents = action.docker_compose_file_path.read_text()
-        if not args.skip_verify:
+        if args.skip_verify:
+            self.update_version = True
+        else:
             try:
                 output = action.run_cmd(
                     "docker",
@@ -1660,30 +1664,30 @@ class UpdateComposeFileStep(Step):
                     "--help",
                     capture_text=True,
                 )
-                version_match = re.search(r"TestGen\s([0-9.]*)", output)
+                version_match = re.search(r"TestGen\s(?:[a-zA-Z]+\s)*([0-9.]*)", output)
                 current_version = version_match.group(1)
 
                 image_match = re.search(r"image:\s*(datakitchen.+):.+\n", contents)
                 docker_image = image_match.group(1)
                 latest_version = "unknown"
-                
+
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
                 resp = urllib.request.urlopen(TESTGEN_LATEST_VERSIONS_URL, timeout=3, context=ssl_context)
                 if resp.code == 200:
-                    json_data = json.loads(resp.read().decode('utf-8'))
+                    json_data = json.loads(resp.read().decode("utf-8"))
                     latest_version = json_data.get("docker", {}).get(docker_image)
             except Exception:
                 CONSOLE.msg("Current version: unknown")
                 CONSOLE.msg("Latest version: unknown")
-                pass
+                self.update_version = True
             else:
                 CONSOLE.msg(f"Current version: {current_version}")
                 CONSOLE.msg(f"Latest version: {latest_version}")
 
                 if current_version != latest_version:
-                    self.update_version = latest_version
+                    self.update_version = True
                 else:
                     CONSOLE.msg("Application is already up-to-date.")
 
@@ -1983,6 +1987,30 @@ class TestGenStopStep(Step):
         )
 
 
+class TestGenUpdateVolumeStep(Step):
+    label = "Updating docker volume"
+
+    def execute(self, action, args):
+        try:
+            # Set testgen user as volume owner in case UID changes
+            action.run_cmd(
+                "docker",
+                "compose",
+                "-f",
+                action.docker_compose_file_path,
+                "run",
+                "--entrypoint",
+                "/bin/sh -c",
+                "--user",
+                "root",
+                "--rm",
+                "engine",
+                "chown -R testgen:testgen /var/lib/testgen",
+            )
+        except CommandFailed:
+            raise SkipStep
+
+
 class TestGenSetupDatabaseStep(Step):
     label = "Initializing the platform database"
 
@@ -2034,7 +2062,7 @@ class TestGenUpgradeDatabaseStep(Step):
             capture_text=True,
         )
 
-        match = re.search("This version:(.*)", output)
+        match = re.search(r"TestGen\s(?:[a-zA-Z]+\s)*([0-9.]*)", output)
         CONSOLE.msg(f"Application version: {match.group(1)}")
 
 
@@ -2119,6 +2147,7 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
         UpdateComposeFileStep,
         TestGenStopStep,
         TestGenPullImagesStep,
+        TestGenUpdateVolumeStep,
         TestGenStartStep,
         TestGenUpgradeDatabaseStep,
     ]
