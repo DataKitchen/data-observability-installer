@@ -1198,6 +1198,7 @@ class HelmInstallStep(Step):
 class ObsHelmInstallServicesStep(HelmInstallStep):
     label = "Installing helm charts for supporting services"
     chart_info = HELM_SERVICES
+    values_arg = "svc_values"
 
 
 class ObsHelmInstallPlatformStep(HelmInstallStep):
@@ -1272,6 +1273,7 @@ class ObsHelmInstallPlatformStep(HelmInstallStep):
         self._collect_images_sha(action, args)
 
     def on_action_fail(self, action, args):
+        super().on_action_fail(action, args)
         self._collect_images_sha(action, args)
 
     def _collect_images_sha(self, action, args):
@@ -1416,10 +1418,16 @@ class ObsInstallAction(AnalyticsMultiStepAction):
             ),
         )
         parser.add_argument(
+            "--svc-values",
+            type=str,
+            action="store",
+            help="Override values for supporting services Helm install. Specify path to a YAML file or URL.",
+        )
+        parser.add_argument(
             "--app-values",
             type=str,
             action="store",
-            help="Override values for Helm app install. Specify path to a YAML file or URL.",
+            help="Override values for app Helm install. Specify path to a YAML file or URL.",
         )
         parser.add_argument(
             "--docker-username",
