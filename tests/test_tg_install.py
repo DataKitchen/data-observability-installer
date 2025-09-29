@@ -47,8 +47,8 @@ def test_tg_install(tg_install_action, start_cmd_mock, stdout_mock, tmp_data_fol
 @pytest.mark.parametrize(
     "stdout_effect",
     (
-        [[b'[{"Name":"testgen","Status":"running(2)"}]'], []],
-        [[], [b'{"Labels":"com.docker.compose.project=testgen,", "Status":"N/A"}']],
+        [['[{"Name":"testgen","Status":"running(2)"}]'], []],
+        [[], ['{"Labels":"com.docker.compose.project=testgen,", "Status":"N/A"}']],
     ),
     ids=("container", "volume"),
 )

@@ -38,6 +38,8 @@ def test_obs_demo_action(action_class, arg_action, demo_cmd, args_mock, start_cm
                 "host.docker.internal:host-gateway",
                 "datakitchen/data-observability-demo:latest",
                 demo_cmd,
+                raise_on_non_zero=True,
+                env=None,
             ),
         ],
         any_order=True,

@@ -20,7 +20,7 @@ def tg_delete_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
 def test_tg_delete(fail_network, tg_delete_action, start_cmd_mock, stdout_mock):
     stdout_mock.side_effect = [
         [],
-        [b'{"Labels":"com.docker.compose.project=testgen,", "Status":"N/A", "Name": "postgresql"}'],
+        ['{"Labels":"com.docker.compose.project=testgen,", "Status":"N/A", "Name": "postgresql"}'],
         [],
     ]
     start_cmd_mock.__exit__.side_effect = [CommandFailed if fail_network else None, None, None]
@@ -76,7 +76,7 @@ def test_tg_delete_compose(
 def test_tg_delete_abort(tg_delete_action, start_cmd_mock, compose_path, stdout_mock, console_msg_mock):
     stdout_mock.side_effect = [
         [],
-        [b'{"Labels":"com.docker.compose.project=testgen,", "Status":"N/A", "Name": "postgresql"}'],
+        ['{"Labels":"com.docker.compose.project=testgen,", "Status":"N/A", "Name": "postgresql"}'],
         [],
     ]
     start_cmd_mock.__exit__.side_effect = [None, None, CommandFailed]

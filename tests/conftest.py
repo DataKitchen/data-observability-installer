@@ -67,7 +67,7 @@ def popen_mock(proc_mock):
 
 @pytest.fixture
 def stream_iter_mock():
-    with patch("tests.installer.StreamIterator") as si_mock:
+    with patch("tests.installer.stream_iterator") as si_mock:
         si_mock.__enter__.return_value = si_mock
         yield si_mock
 

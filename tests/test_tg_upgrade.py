@@ -19,15 +19,15 @@ def tg_upgrade_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock, re
 def tg_upgrade_stdout_side_effect(stdout_mock):
     side_effect = [
         # Pre-execute calls
-        [b"TestGen 1.0.0\n"],  # Version check
+        ["TestGen 1.0.0\n"],  # Version check
         # Execute calls
         [],  # Down
         [],  # Pull
         [],  # Up
         [],  # Upgrade DB
         # Post-execute calls
-        [b"TestGen 1.1.0\n"],  # Confirmation version check
-        [b"[]"],  # Image data collection
+        ["TestGen 1.1.0\n"],  # Confirmation version check
+        ["[]"],  # Image data collection
     ]
 
     stdout_mock.side_effect = side_effect
@@ -60,7 +60,7 @@ def get_compose_content(*extra_vars):
 
 def set_version_check_mock(version_check_mock, latest_version):
     version_check_mock.return_value.code = 200
-    version_values = { "docker": {"datakitchen/dataops-testgen": latest_version } }
+    version_values = {"docker": {"datakitchen/dataops-testgen": latest_version}}
     version_check_mock.return_value.read.return_value = json.dumps(version_values).encode("utf-8")
 
 

@@ -76,7 +76,7 @@ def test_get_failed_cmd_log(action, exc_levels, glob_side_effect, expected_calls
 
 @pytest.mark.unit
 def test_run_cmd_text(action, start_cmd_mock, stdout_mock, console_msg_mock):
-    stdout_mock.return_value = [b"hi there"]
+    stdout_mock.return_value = ["hi there"]
     result = action.run_cmd("cmd", capture_text=True)
     assert result == "hi there"
     console_msg_mock.assert_not_called()
@@ -85,7 +85,7 @@ def test_run_cmd_text(action, start_cmd_mock, stdout_mock, console_msg_mock):
 
 @pytest.mark.unit
 def test_run_cmd_json(action, start_cmd_mock, stdout_mock):
-    stdout_mock.return_value = [b'{"foo": 123}']
+    stdout_mock.return_value = ['{"foo": 123}']
     result = action.run_cmd("cmd", capture_json=True)
     assert result == {"foo": 123}
     start_cmd_mock.assert_called_once()
@@ -93,7 +93,7 @@ def test_run_cmd_json(action, start_cmd_mock, stdout_mock):
 
 @pytest.mark.unit
 def test_run_cmd_invalid_json(action, start_cmd_mock, stdout_mock):
-    stdout_mock.return_value = [b"no JSON here"]
+    stdout_mock.return_value = ["no JSON here"]
     result = action.run_cmd("cmd", capture_json=True)
     assert result == {}
     start_cmd_mock.assert_called_once()
@@ -101,7 +101,7 @@ def test_run_cmd_invalid_json(action, start_cmd_mock, stdout_mock):
 
 @pytest.mark.unit
 def test_run_cmd_json_lines(action, start_cmd_mock, stdout_mock):
-    stdout_mock.return_value = [b'{"foo": 123}', b"something else", b'{"foo": 321}']
+    stdout_mock.return_value = ['{"foo": 123}', "something else", '{"foo": 321}']
     result = action.run_cmd("cmd", capture_json_lines=True)
     assert result == [{"foo": 123}, {"foo": 321}]
     start_cmd_mock.assert_called_once()
@@ -109,7 +109,7 @@ def test_run_cmd_json_lines(action, start_cmd_mock, stdout_mock):
 
 @pytest.mark.unit
 def test_run_cmd_echo(action, start_cmd_mock, stdout_mock, console_msg_mock):
-    stdout_mock.return_value = [b"some output", b"will be echoed"]
+    stdout_mock.return_value = ["some output", "will be echoed"]
     result = action.run_cmd("cmd", echo=True)
     assert result is None
     assert console_msg_mock.call_count == 2
@@ -155,8 +155,8 @@ def test_start_cmd(action, popen_mock, stream_iter_mock):
 
     stream_iter_mock.assert_has_calls(
         [
-            call(popen_mock(), popen_mock().stdout, ANY),
-            call(popen_mock(), popen_mock().stderr, ANY),
+            call(popen_mock(), "stdout", action.session_folder.joinpath()),
+            call(popen_mock(), "stderr", action.session_folder.joinpath()),
             call().__enter__(),
             call().__enter__(),
             call().__exit__(None, None, None),
