@@ -7,6 +7,7 @@ import dataclasses
 import datetime
 import functools
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -162,44 +163,55 @@ def get_installer_version():
         return "N/A"
 
 
-class StreamIterator:
-    def __init__(self, proc, stream, file_path):
-        self.proc = proc
-        self.stream = stream
-        self.file_path = file_path
-        self.file = None
-        self.bytes_written = 0
+@contextlib.contextmanager
+def stream_iterator(proc: subprocess.Popen, stream_name: str, file_path: pathlib.Path, timeout: float = 1.0):
+    comm_index, exc_attr = {
+        "stdout": (0, "output"),
+        "stderr": (1, "stderr"),
+    }[stream_name]
+    buffer = io.TextIOWrapper(io.BytesIO())
 
-    def __iter__(self):
-        return self
+    def _iter():
+        proc_exited = False
+        read_pos = 0
+        while not proc_exited:
+            try:
+                partial = proc.communicate(timeout=timeout)[comm_index]
+            except subprocess.TimeoutExpired as exc:
+                partial = getattr(exc, exc_attr)
+            else:
+                proc_exited = True
 
-    def __next__(self):
-        for return_anyway in (False, True):
-            # We poll the process status before consuming the stream to make sure the StopIteration condition
-            # is not vulnerable to a race condition.
-            ret = self.proc.poll()
-            line = self.stream.readline()
-            if line:
-                if not self.file:
-                    self.file = open(self.file_path, "wb")
-                self.file.write(line)
-                self.bytes_written += len(line)
-                return line
-            if ret is not None and not line:
-                raise StopIteration
-            if not return_anyway:
-                time.sleep(0.1)
-        return line
+            if partial is not None:
+                buffer.buffer.seek(0)
+                buffer.buffer.write(partial)
 
-    def __enter__(self):
-        return self
+            buffer.seek(read_pos)
+            while True:
+                try:
+                    line = buffer.readline()
+                # When some unicode char is incomplete, we skip yielding
+                except UnicodeDecodeError:
+                    break
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        for _ in iter(self):
+                # When the line is empty we skip yielding
+                # When the line is incomplete and the process is still running, we skip yielding
+                if not line or (not line.endswith(os.linesep) and not proc_exited):
+                    break
+
+                yield line.strip(os.linesep)
+
+                read_pos = buffer.tell()
+
+    iterator = _iter()
+    try:
+        yield iterator
+    finally:
+        # Making sure all output was consumed before writing the buffer to the file
+        for _ in iterator:
             pass
-        if self.file:
-            self.file.close()
-        return False
+        if buffer.buffer.tell():
+            file_path.write_bytes(buffer.buffer.getvalue())
 
 
 #
@@ -651,17 +663,16 @@ class Action:
         with self.start_cmd(*cmd, raise_on_non_zero=raise_on_non_zero, env=env, **popen_args) as (proc, stdout, stderr):
             if input:
                 proc.stdin.write(input)
-            proc.stdin.close()
 
             if echo:
                 for line in stdout:
                     if line:
-                        CONSOLE.msg(line.decode().strip())
+                        CONSOLE.msg(line)
             elif capture_text:
-                return b"".join(stdout).decode()
+                return "\n".join(stdout)
             elif capture_json:
                 try:
-                    return json.loads(b"".join(stdout).decode())
+                    return json.loads("".join(stdout))
                 except json.JSONDecodeError:
                     LOG.warning("Error decoding JSON from stdout")
                     return {}
@@ -669,7 +680,7 @@ class Action:
                 json_lines = []
                 for idx, output_line in enumerate(stdout):
                     try:
-                        json_lines.append(json.loads(output_line.decode()))
+                        json_lines.append(json.loads(output_line))
                     except json.JSONDecodeError:
                         LOG.warning(f"Error decoding JSON from stdout line #{idx}")
                 return json_lines
@@ -701,15 +712,15 @@ class Action:
 
         slug_cmd = re.sub(r"[^a-zA-Z]+", "-", cmd_str)[:100].strip("-")
 
-        def get_stream_iterator(stream_name):
-            file_name = f"{self._cmd_idx:04d}-{stream_name}-{slug_cmd}.txt"
-            file_path = self.session_folder.joinpath(file_name)
-            return StreamIterator(proc, getattr(proc, stream_name), file_path)
+        stdout_path, stderr_path = [
+            self.session_folder.joinpath(f"{self._cmd_idx:04d}-{stream_name}-{slug_cmd}.txt")
+            for stream_name in ("stdout", "stderr")
+        ]
 
         try:
             with (
-                get_stream_iterator("stdout") as stdout_iter,
-                get_stream_iterator("stderr") as stderr_iter,
+                stream_iterator(proc, "stdout", stdout_path) as stdout_iter,
+                stream_iterator(proc, "stderr", stderr_path) as stderr_iter,
             ):
                 try:
                     yield proc, stdout_iter, stderr_iter
@@ -724,12 +735,12 @@ class Action:
         finally:
             elapsed = time.time() - started
             LOG.info(
-                "Command [%04d] returned [%d] in [%.3f] seconds. [%d] bytes in STDOUT, [%d] bytes in STDERR",
+                "Command [%04d] returned [%s] in [%.3f] seconds. [%d] bytes in STDOUT, [%d] bytes in STDERR",
                 self._cmd_idx,
                 proc.returncode,
                 elapsed,
-                stdout_iter.bytes_written,
-                stderr_iter.bytes_written,
+                stdout_path.stat().st_size if stdout_path.exists() else 0,
+                stderr_path.stat().st_size if stderr_path.exists() else 0,
             )
 
 
@@ -1455,65 +1466,65 @@ class ObsExposeAction(Action):
     def execute(self, args):
         CONSOLE.title("Expose Observability ports")
 
-        try:
-            with self.start_cmd(
-                "minikube",
-                "kubectl",
-                "--profile",
-                args.profile,
-                "--",
-                "--namespace",
-                args.namespace,
-                "--address",
-                "0.0.0.0",
-                "port-forward",
-                "service/observability-ui",
-                f"{args.port}:http",
-                raise_on_non_zero=False,
-            ) as (proc, stdout, stderr):
-                for output in stdout:
-                    if output:
-                        break
+        success = False
+        with self.start_cmd(
+            "minikube",
+            "kubectl",
+            "--profile",
+            args.profile,
+            "--",
+            "--namespace",
+            args.namespace,
+            "--address",
+            "0.0.0.0",
+            "port-forward",
+            "service/observability-ui",
+            f"{args.port}:http",
+            raise_on_non_zero=False,
+        ) as (proc, stdout, stderr):
+            for output in stdout:
+                if output:
+                    break
 
-                if proc.poll() is None:
-                    url = f"http://localhost:{args.port}"
-                    for service, label in SERVICES_LABELS.items():
-                        CONSOLE.msg(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
-                    CONSOLE.space()
-                    CONSOLE.msg("Listening on all interfaces (0.0.0.0)")
-                    CONSOLE.msg("Keep this process running while using the above URLs")
-                    CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
-
-                    try:
-                        with open(self.data_folder / DEMO_CONFIG_FILE, "r") as file:
-                            json_config = json.load(file)
-                            json_config["api_host"] = BASE_API_URL_TPL.format(
-                                f"http://host.docker.internal:{args.port}"
-                            )
-
-                        with open(self.data_folder / DEMO_CONFIG_FILE, "w") as file:
-                            file.write(json.dumps(json_config))
-                    except Exception:
-                        LOG.exception(f"Unable to update {DEMO_CONFIG_FILE} file with exposed port")
-                else:
-                    for output in stderr:
-                        if output:
-                            CONSOLE.msg(output.decode().strip())
-                    raise CommandFailed
+            if proc.poll() is None:
+                url = f"http://localhost:{args.port}"
+                for service, label in SERVICES_LABELS.items():
+                    CONSOLE.msg(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
+                CONSOLE.space()
+                CONSOLE.msg("Listening on all interfaces (0.0.0.0)")
+                CONSOLE.msg("Keep this process running while using the above URLs")
+                CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
 
                 try:
-                    while proc.poll() is None:
-                        time.sleep(10)
-                except KeyboardInterrupt:
-                    # The empty print forces the terminal cursor to move to the first column
-                    print()
+                    with open(self.data_folder / DEMO_CONFIG_FILE, "r") as file:
+                        json_config = json.load(file)
+                        json_config["api_host"] = BASE_API_URL_TPL.format(f"http://host.docker.internal:{args.port}")
 
-                proc.terminate()
+                    with open(self.data_folder / DEMO_CONFIG_FILE, "w") as file:
+                        file.write(json.dumps(json_config))
+                except Exception:
+                    LOG.exception(f"Unable to update {DEMO_CONFIG_FILE} file with exposed port")
 
+                while True:
+                    try:
+                        proc.wait(10)
+                    except subprocess.TimeoutExpired:
+                        continue
+                    except KeyboardInterrupt:
+                        # The empty print forces the terminal cursor to move to the first column
+                        print()
+                        proc.terminate()
+                        success = True
+                        break
+                    else:
+                        break
+
+        if success:
             CONSOLE.msg("The services are no longer exposed.")
+        else:
+            for output in stderr:
+                CONSOLE.msg(output)
 
-        except Exception as e:
-            LOG.exception("Something went wrong exposing the services ports")
             CONSOLE.space()
             CONSOLE.msg("The platform could not have its ports exposed.")
             CONSOLE.msg(
@@ -1521,7 +1532,7 @@ class ObsExposeAction(Action):
             )
             CONSOLE.space()
             CONSOLE.msg(f"If port {args.port} is in use, use the command option --port to specify an alternate value.")
-            raise AbortAction from e
+            raise AbortAction
 
 
 class ObsDeleteAction(Action):
@@ -1558,7 +1569,7 @@ class DemoContainerAction(Action):
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
 
     def run_dk_demo_container(self, command: str):
-        with self.start_cmd(
+        self.run_cmd(
             "docker",
             "run",
             "--rm",
@@ -1572,14 +1583,8 @@ class DemoContainerAction(Action):
             "host.docker.internal:host-gateway",
             DEMO_IMAGE,
             command,
-        ) as (proc, stdout, stderr):
-            try:
-                for line in stdout:
-                    if line:
-                        CONSOLE.msg(line.decode().strip())
-            except KeyboardInterrupt:
-                print("")
-                proc.terminate()
+            echo=True,
+        )
 
 
 class ObsRunDemoAction(DemoContainerAction):

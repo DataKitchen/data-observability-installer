@@ -19,7 +19,7 @@ def tg_run_demo_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
 @pytest.mark.parametrize("obs_export", (False, True))
 def test_tg_run_demo(obs_export, tg_run_demo_action, args_mock, start_cmd_mock, stdout_mock, compose_path, request):
     args_mock.obs_export = obs_export
-    stdout_mock.side_effect = [[b'[{"Name":"testgen","Status":"running(2)"}]']] + [[]] * 10
+    stdout_mock.side_effect = [['[{"Name":"testgen","Status":"running(2)"}]']] + [[]] * 10
 
     compose_args = ("docker", "compose", "-f", compose_path, "exec", "engine", "testgen")
     kwargs = dict(raise_on_non_zero=True, env=None)
@@ -59,6 +59,8 @@ def test_tg_run_demo(obs_export, tg_run_demo_action, args_mock, start_cmd_mock, 
                 "host.docker.internal:host-gateway",
                 "datakitchen/data-observability-demo:latest",
                 "tg-run-demo",
+                raise_on_non_zero=True,
+                env=None,
             ),
         ]
     else:
@@ -81,7 +83,7 @@ def test_tg_run_demo_abort_not_running(tg_run_demo_action, start_cmd_mock, conso
 
 @pytest.mark.integration
 def test_tg_run_demo_abort_missing_config(tg_run_demo_action, args_mock, start_cmd_mock, stdout_mock, console_msg_mock):
-    stdout_mock.side_effect = [[b'[{"Name":"testgen","Status":"running(2)"}]']] + [[]] * 10
+    stdout_mock.side_effect = [['[{"Name":"testgen","Status":"running(2)"}]']] + [[]] * 10
     args_mock.obs_export = True
 
     with pytest.raises(AbortAction):

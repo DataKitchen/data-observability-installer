@@ -25,11 +25,11 @@ def test_obs_install(obs_install_action, start_cmd_mock, tmp_data_folder, stdout
     def _stdout_side_effect():
         for idx in count():
             if idx == 0:
-                yield [b"{}"]
+                yield ["{}"]
             elif idx == 7:
-                yield [b'[{"Name": "observability-ui", "URLs": ["http://localhost:8501"]}]']
+                yield ['[{"Name": "observability-ui", "URLs": ["http://localhost:8501"]}]']
             elif idx == 8:
-                yield [b'{"service_account_key": "demo-account-key", "project_id": "test-project-id"}']
+                yield ['{"service_account_key": "demo-account-key", "project_id": "test-project-id"}']
             else:
                 yield []
 
@@ -112,7 +112,7 @@ def test_obs_install(obs_install_action, start_cmd_mock, tmp_data_folder, stdout
 
 @pytest.mark.integration
 def test_obs_existing_install_abort(obs_install_action, stdout_mock):
-    stdout_mock.side_effect = [[b'{"Name":"dk-observability","Host":"Running","Kubelet":"Running"}']]
+    stdout_mock.side_effect = [['{"Name":"dk-observability","Host":"Running","Kubelet":"Running"}']]
     with patch.object(obs_install_action, "steps", new=[MinikubeProfileStep]):
         with pytest.raises(AbortAction):
             obs_install_action.execute()

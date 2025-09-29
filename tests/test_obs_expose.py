@@ -1,10 +1,11 @@
 import json
+import subprocess
 from functools import partial
 from unittest.mock import call, patch
 
 import pytest
 
-from tests.installer import ObsExposeAction, CommandFailed, AbortAction
+from tests.installer import ObsExposeAction, AbortAction
 
 
 @pytest.fixture
@@ -18,8 +19,9 @@ def obs_expose_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
 
 @pytest.mark.integration
 def test_obs_expose(obs_expose_action, start_cmd_mock, stdout_mock, proc_mock, demo_config_path, console_msg_mock):
-    proc_mock.poll.side_effect = [None, 0]
-    stdout_mock.return_value = [b"some output"]
+    proc_mock.poll.return_value = None
+    stdout_mock.return_value = ["some output"]
+    proc_mock.wait.side_effect = [subprocess.TimeoutExpired("x", 2), KeyboardInterrupt]
 
     obs_expose_action.execute()
 
@@ -42,6 +44,7 @@ def test_obs_expose(obs_expose_action, start_cmd_mock, stdout_mock, proc_mock, d
             ),
         ]
     )
+    assert proc_mock.wait.call_count == 2
     assert json.loads(demo_config_path.read_text()) == {
         "api_host": "http://host.docker.internal:8501/api",
         "api_key": "demo-api-key",
@@ -58,8 +61,8 @@ def test_obs_expose(obs_expose_action, start_cmd_mock, stdout_mock, proc_mock, d
 
 
 @pytest.mark.integration
-def test_obs_expose_abort(obs_expose_action, start_cmd_mock):
-    start_cmd_mock.__exit__.side_effect = CommandFailed
+def test_obs_expose_abort(obs_expose_action, start_cmd_mock, stderr_mock):
+    stderr_mock.return_value = ["error output"]
 
     with pytest.raises(AbortAction):
         obs_expose_action.execute()
