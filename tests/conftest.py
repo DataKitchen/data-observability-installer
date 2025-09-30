@@ -181,6 +181,7 @@ def args_mock():
     ns.driver = "docker"
     ns.memory = "4096m"
     ns.helm_timeout = 10
+    ns.svc_values = None
     ns.app_values = None
     ns.docker_username = None
     ns.docker_password = None
