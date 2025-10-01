@@ -224,7 +224,7 @@ class Console:
 
     def __init__(self):
         self._last_is_space = False
-        self._partial_msg = ""
+        self._partial_msg = None
 
     def title(self, text):
         LOG.info("Console title: [%s]", text)
@@ -259,21 +259,26 @@ class Console:
             self._last_is_space = True
 
     @contextlib.contextmanager
-    def partial(self):
+    def start_partial(self):
         print(self.MARGIN, end="")
 
-        def console_partial(text):
-            print(text, end="")
-            sys.stdout.flush()
-            self._partial_msg += text
-
+        if self._partial_msg is not None:
+            raise ValueError("Console partial is already started.")
+        self._partial_msg = ""
         try:
-            yield console_partial
+            yield self.partial
         finally:
             print("")
             LOG.info("Console message: [%s]", self._partial_msg)
-            self._partial_msg = ""
+            self._partial_msg = None
             self._last_is_space = False
+
+    def partial(self, text):
+        if self._partial_msg is None:
+            raise ValueError("Console partial has not been started.")
+        print(text, end="")
+        sys.stdout.flush()
+        self._partial_msg += text
 
     @contextlib.contextmanager
     def tee(self, file_path, append=False):
@@ -797,7 +802,7 @@ class MultiStepAction(Action):
         action_fail_exception = None
         action_fail_step = None
         for step in action_steps:
-            with CONSOLE.partial() as partial:
+            with CONSOLE.start_partial() as partial:
                 partial(f"{step.label}... ")
                 try:
                     if action_fail_exception:
@@ -1921,12 +1926,13 @@ class TestGenCreateDockerComposeFileStep(Step):
 
 class TestGenPullImagesStep(Step):
     label = "Pulling docker images"
+    required = False
 
     def execute(self, action, args):
         action.analytics.additional_properties["pull_timeout"] = args.pull_timeout
 
         try:
-            action.run_cmd_retries(
+            with action.start_cmd(
                 "docker",
                 "compose",
                 "-f",
@@ -1934,9 +1940,28 @@ class TestGenPullImagesStep(Step):
                 "pull",
                 "--policy",
                 "always",
-                timeout=args.pull_timeout * 60,
-                retries=TESTGEN_PULL_RETRIES,
-            )
+            ) as (proc, _, stderr):
+                complete_re = re.compile(r"^ ([0-9a-f]{12}) (Already exists|Pull complete)")
+                hash_discovery_re = re.compile(r"^ ([0-9a-f]{12}) (Already exists|Pulling fs layer|Waiting)")
+                discovering = True
+                hashes: set[str] = set()
+                completed_count = 0
+                reported = 0
+                try:
+                    for line in stderr:
+                        if disc_match := hash_discovery_re.match(line):
+                            hashes.add(disc_match.group(1))
+                        elif hashes and discovering:
+                            discovering = False
+                        if complete_re.match(line):
+                            completed_count += 1
+                        if not discovering:
+                            to_be_reported = list(range(reported, int(completed_count * 100 / len(hashes)) + 1, 20))[1:]
+                            for progress in to_be_reported:
+                                CONSOLE.partial(f"{progress}% ")
+                                reported = progress
+                except Exception:
+                    pass
         except CommandFailed:
             # Pulling the images before starting is not mandatory, so we just proceed if it fails
             raise SkipStep
