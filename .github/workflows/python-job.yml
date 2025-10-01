@@ -6,6 +6,9 @@ on:
       python-version:
         type: string
         default: "3.9"
+      runner:
+        type: string
+        default: ubuntu-latest
       run:
         required: true
         type: string
@@ -20,7 +23,10 @@ on:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -41,6 +47,8 @@ jobs:
       - name: Run Command
         run: |
           ${{ inputs.run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -49,4 +57,3 @@ jobs:
           name: ${{ inputs.artifact }}
           path: ${{ inputs.artifact_path }}
           if-no-files-found: ignore
-
