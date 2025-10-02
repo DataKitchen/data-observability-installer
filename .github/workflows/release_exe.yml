@@ -1,0 +1,22 @@
+name: Release Windows Build
+
+on:
+  push:
+    branches:
+      - main
+jobs:
+  windows-release:
+    uses: ./.github/workflows/python-job.yml
+    secrets: inherit
+    with:
+      runner: windows-latest
+      python-version: "3.9"
+      run: |
+        pyinstaller --onefile --exclude demo dk-installer.py
+        export RELEASE_TAG=latest
+        gh release delete "${RELEASE_TAG}" -y || true
+        git push origin --delete "${RELEASE_TAG}" || true
+        git tag "${RELEASE_TAG}"
+        git push origin "${RELEASE_TAG}"
+        gh release create "${RELEASE_TAG}" ./dist/dk-installer.exe \
+          --title "Latest Release"
