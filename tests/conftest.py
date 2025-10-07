@@ -11,15 +11,6 @@ from tests.installer import CONSOLE, Action, TESTGEN_DEFAULT_IMAGE
 
 
 @pytest.fixture
-def proc_mock():
-    proc = Mock()
-    proc.returncode = 0
-    proc.wait.return_value = None
-    proc.poll.return_value = 0
-    return proc
-
-
-@pytest.fixture
 def stdout_mock():
     return Mock(return_value=[])
 
@@ -27,6 +18,16 @@ def stdout_mock():
 @pytest.fixture
 def stderr_mock():
     return Mock(return_value=[])
+
+
+@pytest.fixture
+def proc_mock(stdout_mock, stderr_mock):
+    proc = Mock()
+    proc.returncode = 0
+    proc.wait.return_value = None
+    proc.poll.return_value = 0
+    proc.communicate.return_value = ["\n".join(stdout_mock()).encode(), "\n".join(stderr_mock()).encode()]
+    return proc
 
 
 @pytest.fixture
