@@ -723,14 +723,14 @@ class Action:
         ]
 
         try:
-            with (
-                stream_iterator(proc, "stdout", stdout_path) as stdout_iter,
-                stream_iterator(proc, "stderr", stderr_path) as stderr_iter,
-            ):
-                try:
+            try:
+                with (
+                    stream_iterator(proc, "stdout", stdout_path) as stdout_iter,
+                    stream_iterator(proc, "stderr", stderr_path) as stderr_iter,
+                ):
                     yield proc, stdout_iter, stderr_iter
-                finally:
-                    proc.wait()
+            finally:
+                proc.wait()
             if raise_on_non_zero and proc.returncode != 0:
                 raise CommandFailed
         # We capture and raise CommandFailed to allow the client code to raise an empty CommandFailed exception

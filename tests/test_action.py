@@ -215,3 +215,26 @@ def test_start_cmd_wait_on_exception(action, popen_mock, stream_iter_mock):
 
     assert proc_mock.wait.call_count == 1
     assert exc_info.value.args == ("something went wrong",)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("raise_", (True, False))
+def test_start_cmd_calls_wait_after_streams_consumed(raise_, action, popen_mock):
+    try:
+        with action.start_cmd("cmd", "arg") as (proc_mock, _, _):
+            proc_mock.returncode = 0
+            if raise_:
+                raise RuntimeError()
+    except RuntimeError:
+        did_raise = True
+    else:
+        did_raise = False
+
+    assert did_raise == raise_
+    proc_mock.assert_has_calls(
+        [
+            call.communicate(timeout=1.0),
+            call.communicate(timeout=1.0),
+            call.wait(),
+        ]
+    )
