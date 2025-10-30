@@ -7,8 +7,8 @@ import pytest
 from tests.installer import (
     TestgenInstallAction,
     AbortAction,
-    TestGenVerifyExistingInstallStep,
     TestGenCreateDockerComposeFileStep,
+    ComposeVerifyExistingInstallStep,
 )
 
 
@@ -39,7 +39,7 @@ def test_tg_install(tg_install_action, start_cmd_mock, stdout_mock, tmp_data_fol
         any_order=True,
     )
 
-    assert Path(tmp_data_folder).joinpath("docker-compose.yml").stat().st_size > 0
+    assert Path(tmp_data_folder).joinpath("test-compose.yml").stat().st_size > 0
     assert Path(tmp_data_folder).joinpath("dk-tg-credentials.txt").stat().st_size > 0
 
 
@@ -47,14 +47,18 @@ def test_tg_install(tg_install_action, start_cmd_mock, stdout_mock, tmp_data_fol
 @pytest.mark.parametrize(
     "stdout_effect",
     (
-        [['[{"Name":"testgen","Status":"running(2)"}]'], []],
-        [[], ['{"Labels":"com.docker.compose.project=testgen,", "Status":"N/A"}']],
+        [['[{"Name":"test-project","Status":"running(2)","ConfigFiles":"<COMPOSE>"}]'], []],
+        [[], ['{"Labels":"com.docker.compose.project=test-project,", "Status":"N/A"}']],
     ),
     ids=("container", "volume"),
 )
-def test_tg_existing_install_abort(stdout_effect, tg_install_action, stdout_mock):
-    stdout_mock.side_effect = stdout_effect
-    with patch.object(tg_install_action, "steps", new=[TestGenVerifyExistingInstallStep]):
+def test_tg_existing_install_abort(stdout_effect, tg_install_action, stdout_mock, compose_path):
+    stdout_mock.side_effect = [
+        [line.replace("<COMPOSE>", str(compose_path)) for line in output] for output in stdout_effect
+    ]
+    compose_path.touch()
+
+    with patch.object(tg_install_action, "steps", new=[ComposeVerifyExistingInstallStep]):
         with pytest.raises(AbortAction):
             tg_install_action.execute()
 
