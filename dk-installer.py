@@ -1555,7 +1555,7 @@ class ObsInstallAction(AnalyticsMultiStepAction, ComposeActionMixin):
 
     label = "Installation"
     title = "Install Observability"
-    intro_text = ["This process may take 5~30 minutes depending on your system resources and network speed."]
+    intro_text = ["This process may take 5~15 minutes depending on your system resources and network speed."]
 
     args_cmd = "install"
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
