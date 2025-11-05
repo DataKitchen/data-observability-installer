@@ -29,25 +29,12 @@ import urllib.request
 import urllib.parse
 import zipfile
 import typing
+
 #
 # Initial setup
 #
 
-MINIKUBE_PROFILE = "dk-observability"
-MINIKUBE_KUBE_VER = "v1.32.0"
-NAMESPACE = "datakitchen"
-HELM_REPOS = (("datakitchen", "https://datakitchen.github.io/dataops-observability/"),)
-HELM_SERVICES = (
-    "dataops-observability-services",
-    os.environ.get("HELM_FOLDER", "datakitchen/dataops-") + "observability-services",
-)
-HELM_APP = (
-    "dataops-observability-app",
-    os.environ.get("HELM_FOLDER", "datakitchen/dataops-") + "observability-app",
-)
-HELM_DEFAULT_TIMEOUT = 10
 REQ_CHECK_TIMEOUT = 30
-DOCKER_COMPOSE_FILE = "docker-compose.yml"
 DEFAULT_DOCKER_REGISTRY = "docker.io"
 DOCKER_NETWORK = "datakitchen-network"
 DOCKER_NETWORK_SUBNET = "192.168.60.0/24"
@@ -56,23 +43,9 @@ INSTALLER_NAME = pathlib.Path(__file__).name
 DEMO_CONFIG_FILE = "demo-config.json"
 DEMO_IMAGE = "datakitchen/data-observability-demo:latest"
 DEMO_CONTAINER_NAME = "dk-demo"
-SERVICES_LABELS = {
-    "observability-ui": "User Interface",
-    "event-api": "Event Ingestion API",
-    "observability-api": "Observability API",
-    "agent-api": "Agent Heartbeat API",
-}
-SERVICES_URLS = {
-    "observability-ui": "{}",
-    "event-api": "{}/api/events/v1",
-    "observability-api": "{}/api/observability/v1",
-    "agent-api": "{}/api/agent/v1",
-}
-DEFAULT_EXPOSE_PORT = 8082
-DEFAULT_OBS_MEMORY = "4096m"
-BASE_API_URL_TPL = "{}/api"
+
+BASE_API_URL_TPL = "http://host.docker.internal:{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
-TESTGEN_COMPOSE_NAME = "testgen"
 TESTGEN_LATEST_TAG = "v4"
 TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 5
@@ -80,6 +53,20 @@ TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
 TESTGEN_LATEST_VERSIONS_URL = (
     "https://dk-support-external.s3.us-east-1.amazonaws.com/testgen-observability/testgen-latest-versions.json"
+)
+
+OBS_LATEST_TAG = "v2"
+OBS_DEF_BE_IMAGE = f"datakitchen/dataops-observability-be:{OBS_LATEST_TAG}"
+OBS_DEF_UI_IMAGE = f"datakitchen/dataops-observability-ui:{OBS_LATEST_TAG}"
+OBS_PULL_TIMEOUT = 5
+OBS_PULL_RETRIES = 3
+OBS_DEFAULT_PORT = 8082
+
+OBS_SERVICES_URLS = (
+    ("User Interface", "{}:{}/"),
+    ("Event Ingestion API", "{}:{}/api/events/v1"),
+    ("Observability API", "{}:{}/api/observability/v1"),
+    ("Agent Heartbeat API", "{}:{}/api/agent/v1"),
 )
 
 MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
@@ -94,6 +81,8 @@ DEFAULT_USER_DATA = {
 }
 
 LOG = logging.getLogger()
+
+COMPOSE_VAR_RE = re.compile(r"\$\{(\w+):-([^\}]*)\}")
 
 #
 # Utility functions
@@ -140,19 +129,6 @@ def generate_password():
 def delete_file(file_path):
     LOG.debug("Deleting [%s]", file_path.name)
     file_path.unlink(missing_ok=True)
-
-
-def get_testgen_status(action):
-    compose_installs = action.run_cmd("docker", "compose", "ls", "--format=json", capture_json=True)
-    for install in compose_installs:
-        if install["Name"] == TESTGEN_COMPOSE_NAME:
-            return install
-    return {}
-
-
-def get_testgen_volumes(action):
-    volumes = action.run_cmd("docker", "volume", "list", "--format=json", capture_json_lines=True)
-    return [v for v in volumes if "com.docker.compose.project=testgen" in v.get("Labels", "")]
 
 
 @functools.cache
@@ -573,8 +549,11 @@ class Action:
         CONSOLE.msg("to the #support channel on https://data-observability-slack.datakitchen.io/join.")
         CONSOLE.msg(f"The logs can be found in {msg_file_path}.")
 
+    def get_requirements(self, args) -> list[Requirement]:
+        return self.requirements
+
     def _check_requirements(self, args):
-        missing_reqs = [req.key for req in self.requirements if not req.check_availability(self, args)]
+        missing_reqs = [req.key for req in self.get_requirements(args) if not req.check_availability(self, args)]
         if missing_reqs:
             self.analytics.additional_properties["missing_requirements"] = missing_reqs
             raise AbortAction
@@ -775,6 +754,10 @@ class MultiStepAction(Action):
     title: str = ""
     intro_text: list[str] = []
 
+    def __init__(self):
+        super().__init__()
+        self.ctx = {}
+
     def _print_intro_text(self, args):
         CONSOLE.space()
         for line in self.intro_text:
@@ -814,6 +797,8 @@ class MultiStepAction(Action):
                     continue
                 except Exception as e:
                     partial("FAILED")
+                    if not isinstance(e, InstallerError):
+                        LOG.exception("Unexpected Exception executing step [%s]", step)
                     if step.required:
                         action_fail_exception = e
                         action_fail_step = step
@@ -850,7 +835,7 @@ class Installer:
         self.parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
         self.parser.add_argument(
             "--no-analytics",
-            default=True,
+            default=os.getenv("DK_INSTALLER_ANALYTICS", "yes").lower() == "yes",
             dest="send_analytics_data",
             action="store_false",
             help="Disable from sending anonymous analytics data to Datakitchen. Default is to send.",
@@ -958,46 +943,6 @@ class Menu:
 # Common blocks shared by more than one step/action
 #
 
-
-def get_minikube_parser():
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument(
-        "--profile",
-        type=str,
-        action="store",
-        default=MINIKUBE_PROFILE,
-        help="Name of the minikube profile that will be started/deleted. Defaults to '%(default)s'",
-    )
-    parser.add_argument(
-        "--namespace",
-        type=str,
-        action="store",
-        default=NAMESPACE,
-        help="Namespace to be given to the kubernetes resources. Defaults to '%(default)s'",
-    )
-    return parser
-
-
-minikube_parser = get_minikube_parser()
-
-REQ_HELM = Requirement(
-    "HELM",
-    ("helm", "version"),
-    ("The prerequisite Helm is not available.", "Install Helm and try again."),
-)
-REQ_MINIKUBE = Requirement(
-    "MINIKUBE",
-    ("minikube", "version"),
-    ("The prerequisite Minikube is not available.", "Install Minikube and try again."),
-)
-REQ_MINIKUBE_DRIVER = Requirement(
-    "MINIKUBE_DRIVER",
-    ("{driver}", "-v"),
-    (
-        "The '{driver}' driver for Minikube is not available",
-        "Install '{driver}' and try again.",
-    ),
-)
 REQ_DOCKER = Requirement(
     "DOCKER",
     ("docker", "-v"),
@@ -1034,286 +979,360 @@ class AnalyticsMultiStepAction(MultiStepAction):
                 CONSOLE.msg(line)
 
 
-#
-# Action and Steps implementations
-#
+class ComposeActionMixin:
+    def get_compose_file_path(self, args):
+        compose_path = self.data_folder.joinpath(args.compose_file_name)
+        try:
+            compose_path = compose_path.relative_to(pathlib.Path().absolute())
+        except ValueError:
+            pass
+        return compose_path
+
+    def get_status(self, args) -> dict[str, str]:
+        compose_installs = self.run_cmd("docker", "compose", "ls", "--format=json", capture_json=True)
+        for install in compose_installs:
+            if install["Name"] == args.compose_project_name:
+                return install
+        return {}
+
+    def get_volumes(self, args) -> list[dict[str, str]]:
+        label = f"com.docker.compose.project={args.compose_project_name}"
+        volumes = self.run_cmd("docker", "volume", "list", "--format=json", capture_json_lines=True)
+        return [v for v in volumes if label in v.get("Labels", "")]
+
+
+class ComposeDeleteAction(Action, ComposeActionMixin):
+    args_cmd = "delete"
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+
+    def execute(self, args):
+        if self.get_compose_file_path(args).exists():
+            self._delete_containers(args)
+            self._delete_network()
+        else:
+            # Trying to delete the network before any exception
+            self._delete_network()
+            # Trying to delete dangling volumes
+            self._delete_volumes(args)
+
+    def _delete_containers(self, args):
+        CONSOLE.title(f"Delete {args.prod_name} instance")
+        try:
+            self.run_cmd(
+                "docker",
+                "compose",
+                "-f",
+                self.get_compose_file_path(args),
+                "down",
+                *([] if args.keep_images else ["--rmi", "all"]),
+                "--volumes",
+                echo=True,
+                raise_on_non_zero=True,
+            )
+        except CommandFailed:
+            CONSOLE.msg("Could NOT delete the Docker resources")
+            raise AbortAction
+        else:
+            if not args.keep_config:
+                delete_file(self.get_compose_file_path(args))
+            delete_file(self.data_folder / CREDENTIALS_FILE.format(args.prod))
+            CONSOLE.msg("Docker containers and volumes deleted")
+
+    def _delete_network(self):
+        try:
+            self.run_cmd("docker", "network", "rm", DOCKER_NETWORK, raise_on_non_zero=True)
+        except CommandFailed:
+            LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
+        else:
+            CONSOLE.msg("Docker network deleted")
+
+    def _delete_volumes(self, args):
+        if volumes := self.get_volumes(args):
+            try:
+                self.run_cmd(
+                    "docker",
+                    "volume",
+                    "rm",
+                    *[v["Name"] for v in volumes],
+                )
+            except CommandFailed:
+                CONSOLE.msg("Could NOT delete docker volumes. Please delete them manually")
+                raise AbortAction
+            else:
+                CONSOLE.msg("Docker volumes deleted")
+
+    def get_parser(self, sub_parsers):
+        parser = super().get_parser(sub_parsers)
+        parser.add_argument(
+            "--keep-images",
+            action="store_true",
+            help="Does not delete the images when deleting the installation",
+        )
+        parser.add_argument(
+            "--keep-config",
+            action="store_true",
+            help="Does not delete the compose config file when deleting the installation",
+        )
+        return parser
+
+
+class ComposeVerifyExistingInstallStep(Step):
+    label = "Verifying existing installation"
+
+    def pre_execute(self, action, args):
+        status = action.get_status(args)
+        volumes = action.get_volumes(args)
+        if status or volumes:
+            CONSOLE.msg(
+                f"Found {args.prod_name} docker compose containers and/or volumes. If a previous attempt to run this",
+            )
+            CONSOLE.msg(
+                f"installer failed, please run `python3 {INSTALLER_NAME} {args.prod} delete` before trying again."
+            )
+            CONSOLE.space()
+            if volumes:
+                status["Volumes"] = ", ".join([v.get("Name", "N/A") for v in volumes])
+            for k, v in status.items():
+                CONSOLE.msg(f"{k:>15}: {v}")
+            raise AbortAction
+
+
+class ComposePullImagesStep(Step):
+    label = "Pulling docker images"
+    required = False
+
+    def execute(self, action, args):
+        action.analytics.additional_properties["pull_timeout"] = args.pull_timeout
+
+        try:
+            with action.start_cmd(
+                "docker",
+                "compose",
+                "-f",
+                action.get_compose_file_path(args),
+                "pull",
+                "--policy",
+                "always",
+            ) as (proc, _, stderr):
+                complete_re = re.compile(r"^ ([0-9a-f]{12}) (Already exists|Pull complete)")
+                hash_discovery_re = re.compile(r"^ ([0-9a-f]{12}) (Already exists|Pulling fs layer|Waiting)")
+                discovering = True
+                hashes: set[str] = set()
+                completed_count = 0
+                reported = 0
+                try:
+                    for line in stderr:
+                        if disc_match := hash_discovery_re.match(line):
+                            hashes.add(disc_match.group(1))
+                        elif hashes and discovering:
+                            discovering = False
+                        if complete_re.match(line):
+                            completed_count += 1
+                        if not discovering:
+                            to_be_reported = list(range(reported, int(completed_count * 100 / len(hashes)) + 1, 20))[1:]
+                            for progress in to_be_reported:
+                                CONSOLE.partial(f"{progress}% ")
+                                reported = progress
+                except Exception:
+                    pass
+        except CommandFailed:
+            # Pulling the images before starting is not mandatory, so we just proceed if it fails
+            raise SkipStep
+
+    def on_action_fail(self, action, args):
+        images = action.run_cmd(
+            "docker",
+            "compose",
+            "-f",
+            action.get_compose_file_path(args),
+            "images",
+            "--format",
+            "json",
+            capture_json=True,
+        )
+        image_repo_tags = [":".join((img["Repository"], img["Tag"])) for img in images]
+        collect_images_digest(action, image_repo_tags)
+
+
+class ComposeStartStep(Step):
+    label = "Starting docker compose application"
+
+    def execute(self, action, args):
+        action.run_cmd(
+            "docker",
+            "compose",
+            "-f",
+            action.get_compose_file_path(args),
+            "up",
+            "--wait",
+        )
+
+    def on_action_fail(self, action, args):
+        if action.args_cmd == "install":
+            action.run_cmd(
+                "docker",
+                "compose",
+                "-f",
+                action.get_compose_file_path(args),
+                "down",
+                "--volumes",
+            )
+
+
+class ComposeStopStep(Step):
+    label = "Stopping docker compose application"
+
+    def execute(self, action, args):
+        action.run_cmd(
+            "docker",
+            "compose",
+            "-f",
+            action.get_compose_file_path(args),
+            "down",
+        )
 
 
 class DockerNetworkStep(Step):
     label = "Creating a Docker network"
 
     def execute(self, action, args):
-        if args.prod == "tg" or args.driver == "docker":
-            try:
-                action.run_cmd(
-                    "docker",
-                    "network",
-                    "inspect",
-                    DOCKER_NETWORK,
-                )
-                LOG.info(f"Re-using existing Docker network '{DOCKER_NETWORK}'")
-                raise SkipStep
-            except CommandFailed:
-                LOG.info(f"Creating Docker network '{DOCKER_NETWORK}'")
-                action.run_cmd(
-                    "docker",
-                    "network",
-                    "create",
-                    "--subnet",
-                    DOCKER_NETWORK_SUBNET,
-                    "--gateway",
-                    # IP at index 0 is unavailable
-                    str(ipaddress.IPv4Network(DOCKER_NETWORK_SUBNET)[1]),
-                    DOCKER_NETWORK,
-                )
-        else:
+        try:
+            action.run_cmd(
+                "docker",
+                "network",
+                "inspect",
+                DOCKER_NETWORK,
+            )
+            LOG.info(f"Re-using existing Docker network '{DOCKER_NETWORK}'")
             raise SkipStep
+        except CommandFailed:
+            LOG.info(f"Creating Docker network '{DOCKER_NETWORK}'")
+            action.run_cmd(
+                "docker",
+                "network",
+                "create",
+                "--subnet",
+                DOCKER_NETWORK_SUBNET,
+                "--gateway",
+                # IP at index 0 is unavailable
+                str(ipaddress.IPv4Network(DOCKER_NETWORK_SUBNET)[1]),
+                DOCKER_NETWORK,
+            )
 
 
-class MinikubeProfileStep(Step):
-    label = "Starting a new minikube profile"
+class CreateComposeFileStepBase(Step):
+    label = "Creating the docker-compose definition file"
 
     def pre_execute(self, action, args):
-        env_json = action.run_cmd(
-            "minikube",
-            "-p",
-            args.profile,
-            "status",
-            "-o",
-            "json",
-            capture_json=True,
-            raise_on_non_zero=False,
-        )
-        if "Name" in env_json:
-            CONSOLE.msg(
-                "Found a minikube profile with the same name. If a previous attempt to run this installer failed,"
-            )
-            CONSOLE.msg(
-                f"please run `python3 {INSTALLER_NAME} {args.prod} delete --profile={args.profile}` before trying again"
-            )
-            CONSOLE.msg("or choose a different profile name.")
-            CONSOLE.space()
-            for k, v in env_json.items():
-                CONSOLE.msg(f"{k:>10}: {v}")
-            raise AbortAction
+        compose_path = action.get_compose_file_path(args)
+        using_existing = compose_path.exists()
+
+        action.ctx["using_existing"] = using_existing
+        action.analytics.additional_properties["existing_compose_file"] = using_existing
 
     def execute(self, action, args):
-        action.analytics.additional_properties["minikube_mem"] = args.memory
-        action.analytics.additional_properties["minikube_driver"] = args.driver
-
-        action.run_cmd(
-            "minikube",
-            "start",
-            f"--memory={args.memory}",
-            f"--profile={args.profile}",
-            f"--namespace={args.namespace}",
-            f"--driver={args.driver}",
-            f"--kubernetes-version={MINIKUBE_KUBE_VER}",
-            f"--network={DOCKER_NETWORK}",
-            # minikube tries to use gateway + 1 by default, but that may be in use by TestGen - so we pass in a static IP at gateway + 4
-            f"--static-ip={str(ipaddress.IPv4Network(DOCKER_NETWORK_SUBNET)[5])}",
-            "--embed-certs",
-            "--extra-config=apiserver.service-node-port-range=1-65535",
-            "--extra-config=kubelet.allowed-unsafe-sysctls=net.core.somaxconn",
-        )
-
-    def on_action_fail(self, action, args):
-        if args.debug:
-            LOG.debug("Skipping deleting the minikube profile on failure because debug is ON")
-            return
-
-        action.run_cmd("minikube", "-p", args.profile, "delete")
-
-    def on_action_success(self, action, args):
-        action.run_cmd("minikube", "profile", args.profile)
-
-
-class SetupHelmReposStep(Step):
-    label = "Setting up the helm repositories"
-
-    def execute(self, action, args):
-        if "HELM_FOLDER" in os.environ:
+        compose_path = action.get_compose_file_path(args)
+        if action.ctx.get("using_existing"):
+            LOG.info("Re-using existing [%s]", compose_path)
             raise SkipStep
-        for name, url in HELM_REPOS:
-            action.run_cmd("helm", "repo", "add", name, url, "--force-update")
-        action.run_cmd("helm", "repo", "update")
+        else:
+            LOG.info("Creating [%s]", compose_path)
+            compose_contents = self.get_compose_file_contents(action, args)
+            compose_path.write_text(compose_contents)
 
-
-class HelmInstallStep(Step):
-    chart_info: tuple[str, str] = None
-    values_arg: str = None
-
-    def execute(self, action, args):
-        action.analytics.additional_properties["helm_timeout"] = args.helm_timeout
-
-        release, chart_ref = self.chart_info
-        values_file = getattr(args, self.values_arg) if self.values_arg else None
-        values = ("--values", values_file) if values_file else ()
-        action.run_cmd(
-            "helm",
-            "install",
-            release,
-            chart_ref,
-            *values,
-            f"--namespace={args.namespace}",
-            "--create-namespace",
-            "--wait",
-            f"--timeout={args.helm_timeout}m",
-        )
-
-    def on_action_fail(self, action, args):
-        release, _ = self.chart_info
-        action.run_cmd(
-            "helm",
-            "status",
-            release,
-            "-o",
-            "json",
-            capture_json=True,
-            raise_on_non_zero=False,
-        )
-
-        pods = action.run_cmd(
-            "minikube",
-            "kubectl",
-            "--profile",
-            args.profile,
-            "--",
-            "--namespace",
-            args.namespace,
-            "-l",
-            f"app.kubernetes.io/instance={release}",
-            "get",
-            "pods",
-            "-o",
-            "json",
-            capture_json=True,
-        )
-
-        if POD_LOG_LIMIT:
-            for pod in pods["items"]:
-                for container in pod["status"]["containerStatuses"]:
-                    if not container["ready"]:
-                        action.run_cmd(
-                            "minikube",
-                            "kubectl",
-                            "--profile",
-                            args.profile,
-                            "--",
-                            "--namespace",
-                            args.namespace,
-                            "logs",
-                            pod["metadata"]["name"],
-                            "-c",
-                            container["name"],
-                            "--limit-bytes",
-                            str(POD_LOG_LIMIT),
-                        )
-
-
-class ObsHelmInstallServicesStep(HelmInstallStep):
-    label = "Installing helm charts for supporting services"
-    chart_info = HELM_SERVICES
-    values_arg = "svc_values"
-
-
-class ObsHelmInstallPlatformStep(HelmInstallStep):
-    label = "Installing helm charts for Observability platform"
-    chart_info = HELM_APP
-    values_arg = "app_values"
-
-    def execute(self, action, args):
-        if args.docker_username and args.docker_password:
-            action.run_cmd(
-                "minikube",
-                "kubectl",
-                "--profile",
-                args.profile,
-                "--",
-                "--namespace",
-                args.namespace,
-                "create",
-                "secret",
-                "docker-registry",
-                "docker-hub-pull-secrets",
-                "--docker-username",
-                args.docker_username,
-                "--docker-password",
-                args.docker_password,
-            )
-
-        super().execute(action, args)
-
-        if not (
-            args.driver == "docker"
-            and platform.system()
-            in [
-                "Darwin",
-                "Windows",
-            ]
-        ):
-            try:
-                data = action.run_cmd(
-                    "minikube",
-                    "-p",
-                    args.profile,
-                    "service",
-                    "--namespace",
-                    args.namespace,
-                    "list",
-                    "-o",
-                    "json",
-                    capture_json=True,
-                )
-                url = [svc["URLs"][0] for svc in data if svc["Name"] == "observability-ui"][0]
-            except Exception:
-                pass
-            else:
-                action.ctx["base_url"] = url
+    def get_compose_file_contents(self, action, args) -> str:
+        raise NotImplementedError
 
     def on_action_success(self, action, args):
-        if not action.ctx.get("base_url"):
-            cmd_args = []
-            if args.profile != MINIKUBE_PROFILE:
-                cmd_args.append(f"--profile={args.profile}")
-            if args.namespace != NAMESPACE:
-                cmd_args.append(f"--namespace={args.namespace}")
-
-            cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
-            with CONSOLE.tee(cred_file_path, append=True) as console_tee:
-                console_tee("Because you are using the docker driver on a Mac or Windows, you have to run")
-                console_tee("the following command in order to be able to access the platform.")
-                console_tee("")
-                console_tee(f"python3 {INSTALLER_NAME} {args.prod} expose {' '.join(cmd_args)}")
-
-        self._collect_images_sha(action, args)
+        CONSOLE.space()
+        if action.ctx.get("using_existing"):
+            CONSOLE.msg(f"Used existing compose file: {action.get_compose_file_path(args)}.")
+        else:
+            CONSOLE.msg(f"Created new {args.compose_file_name} file.")
 
     def on_action_fail(self, action, args):
-        super().on_action_fail(action, args)
-        self._collect_images_sha(action, args)
+        # We keep the file around for inspection when in debug mode
+        if not args.debug and not action.ctx.get("using_existing"):
+            delete_file(action.get_compose_file_path(args))
 
-    def _collect_images_sha(self, action, args):
-        images = action.run_cmd(
-            "minikube",
-            "-p",
-            args.profile,
-            "image",
-            "list",
-            "--format=json",
-            capture_json=True,
+
+def get_observability_version(action, args):
+    installed_packages = action.run_cmd(
+        "docker",
+        "compose",
+        "-f",
+        action.get_compose_file_path(args),
+        "exec",
+        "-it",
+        "observability_backend",
+        "/usr/local/bin/pip",
+        "list",
+        "--format=json",
+        capture_json=True,
+    )
+
+    try:
+        return [p["version"] for p in installed_packages if p["name"].startswith("Observability")][0]
+    except Exception:
+        pass
+
+
+#
+# Action and Steps implementations
+#
+
+
+class ObsComposeStartStep(ComposeStartStep):
+    def on_action_success(self, action, args):
+        super().on_action_success(action, args)
+        if version := get_observability_version(action, args):
+            if version_before := action.ctx.get("before_upgrade_version"):
+                CONSOLE.msg(f"Upgraded from version {version_before} to {version}.")
+            else:
+                CONSOLE.msg(f"Installed version: {version}")
+
+
+class ObsFetchCurrentVersionStep(ComposeStartStep):
+    label = "Checking current version"
+
+    def execute(self, action, args):
+        try:
+            action.ctx["before_upgrade_version"] = get_observability_version(action, args)
+        except CommandFailed:
+            raise AbortAction
+        else:
+            action.ctx["obs_running"] = True
+
+    def on_action_fail(self, action, args):
+        if not action.ctx.get("obs_running"):
+            CONSOLE.msg("Failed to fetch the current version. Observability has to be running to be upgraded.")
+
+
+class ObsUpgradeAction(MultiStepAction, ComposeActionMixin):
+    label = "Upgrade"
+    title = "Upgrade Observability"
+    args_cmd = "upgrade"
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+
+    steps = [
+        ObsFetchCurrentVersionStep,
+        ComposePullImagesStep,
+        ObsComposeStartStep,
+    ]
+
+    def get_parser(self, sub_parsers):
+        parser = super().get_parser(sub_parsers)
+        parser.add_argument(
+            "--pull-timeout",
+            type=int,
+            action="store",
+            default=OBS_PULL_TIMEOUT,
+            help=(
+                "Maximum amount of time in minutes that Docker will be allowed to pull the images. "
+                "Defaults to '%(default)s'"
+            ),
         )
-        image_repo_tags = [img["repoTags"][0] for img in images]
-        bash_env = action.run_cmd(
-            "minikube",
-            "-p",
-            args.profile,
-            "docker-env",
-            "--shell",
-            "bash",
-            capture_text=True,
-        )
-        env = dict(re.findall(r'export ([\w_]+)="([^"]+)"', bash_env, re.M))
-        collect_images_digest(action, image_repo_tags, env)
+        return parser
 
 
 class ObsDataInitializationStep(Step):
@@ -1323,20 +1342,17 @@ class ObsDataInitializationStep(Step):
     def execute(self, action, args):
         self._user_data = {"password": generate_password(), **DEFAULT_USER_DATA}
         action.ctx["init_data"] = action.run_cmd(
-            "minikube",
-            "kubectl",
-            "--profile",
-            args.profile,
-            "--",
-            "--namespace",
-            args.namespace,
+            "docker",
+            "compose",
+            "-f",
+            action.get_compose_file_path(args),
             "exec",
-            "-i",
-            "deployments/agent-api",
-            "--",
+            "-it",
+            "observability_backend",
             "/dk/bin/cli",
             "init",
             "--demo",
+            "--topics",
             "--json",
             input=json.dumps(self._user_data).encode(),
             capture_json=True,
@@ -1345,11 +1361,9 @@ class ObsDataInitializationStep(Step):
     def on_action_success(self, action, args):
         cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
         with CONSOLE.tee(cred_file_path) as console_tee:
-            if url := action.ctx.get("base_url"):
-                for service, label in SERVICES_LABELS.items():
-                    console_tee(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
-                console_tee("")
-
+            for service, url_tpl in OBS_SERVICES_URLS:
+                console_tee(f"{service:>20}: {url_tpl.format('http://localhost', args.port)}")
+            console_tee("")
             console_tee(f"Username: {self._user_data['username']}")
             console_tee(f"Password: {self._user_data['password']}", skip_logging=True)
 
@@ -1367,215 +1381,215 @@ class ObsGenerateDemoConfigStep(Step):
             LOG.info("Skipping generating the demo config file because the initialization data is not available")
             raise SkipStep
         else:
-            base_url = action.ctx.get("base_url", f"http://host.docker.internal:{DEFAULT_EXPOSE_PORT}")
             config = {
                 "api_key": init_data["service_account_key"],
                 "project_id": init_data["project_id"],
                 "cloud_provider": "azure",
-                "api_host": BASE_API_URL_TPL.format(base_url),
+                "api_host": BASE_API_URL_TPL.format(args.port),
             }
             with open(action.data_folder / DEMO_CONFIG_FILE, "w") as file:
                 file.write(json.dumps(config))
 
 
-class ObsInstallAction(AnalyticsMultiStepAction):
+class ObsCreateComposeFileStep(CreateComposeFileStepBase):
+    def get_compose_file_contents(self, action, args):
+        action.analytics.additional_properties["used_custom_image"] = any(
+            (
+                args.ui_image != OBS_DEF_UI_IMAGE,
+                args.be_image != OBS_DEF_BE_IMAGE,
+            )
+        )
+        compose_file_content = textwrap.dedent(
+            """
+            name: ${DK_OBSERVABILITY_COMPOSE_NAME:-}
+
+            x-database-config: &database_config
+              MYSQL_USER: ${DK_OBSERVABILITY_MYSQL_USER:-observability}
+              MYSQL_PASSWORD: ${DK_OBSERVABILITY_MYSQL_PASSWORD:-}
+
+            x-database-client-config: &database_client_config
+              MYSQL_SERVICE_HOST: ${DK_OBSERVABILITY_MYSQL_HOST:-database}
+              MYSQL_SERVICE_PORT: ${DK_OBSERVABILITY_MYSQL_PORT:-3306}
+
+            services:
+              broker:
+                container_name: kafka
+                image: apache/kafka:3.9.1
+                restart: always
+                expose: ["9092", "9093"]
+                environment:
+                  # Core KRaft mode
+                  KAFKA_PROCESS_ROLES: broker,controller
+                  KAFKA_NODE_ID: 1
+                  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:9093
+                  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+                  # Networking
+                  KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+                  KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:9092
+                  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+                  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+                  KAFKA_LOG4J_LOGGER_kafka_server_DefaultAutoTopicCreationManager: WARN
+                  # Transactions
+                  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+                  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+                  # Topics
+                  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+                  # Other
+                  KAFKA_LOG4J_LOGGERS: "kafka=WARN,org.apache.kaf*ka=WARN"
+                volumes:
+                  - kafka_data:/var/lib/kafka/data
+                healthcheck:
+                  test: [ "CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list" ]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 5
+
+              database:
+                container_name: mysql
+                image: mysql:8.4
+                restart: always
+                expose: ["3306"]
+                environment:
+                  MYSQL_ROOT_PASSWORD: ${DK_OBSERVABILITY_MYSQL_ROOT_PASSWORD:-}
+                  MYSQL_DATABASE: datakitchen
+                  <<: *database_config
+                volumes:
+                  - mysql_data:/var/lib/mysql
+
+                healthcheck:
+                  test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+                  interval: 5s
+                  retries: 5
+
+              observability_data_init:
+                container_name: data-init
+                image: ${DK_OBSERVABILITY_BE_IMAGE:-}
+                restart: on-failure
+                depends_on:
+                  database:
+                    condition: service_healthy
+                  broker:
+                    condition: service_healthy
+                environment:
+                  OBSERVABILITY_CONFIG: minikube
+                  <<: [*database_config, *database_client_config]
+                entrypoint: /dk/bin/cli
+                command:  migrate
+
+              observability_backend:
+                container_name: back-end
+                image: ${DK_OBSERVABILITY_BE_IMAGE:-}
+                restart: always
+                depends_on:
+                  observability_data_init:
+                    condition: service_completed_successfully
+                expose: ["5000", "5001", "5003"]
+                environment:
+                  OBSERVABILITY_CONFIG: minikube
+                  KAFKA_SERVICE_HOST: ${DK_OBSERVABILITY_KAFKA_HOST:-broker}
+                  KAFKA_SERVICE_PORT: ${DK_OBSERVABILITY_KAFKA_PORT:-9092}
+                  <<: [*database_config, *database_client_config]
+                healthcheck:
+                  test: [ "CMD", "/bin/sh", "-c", "supervisorctl -c /dk/supervisord.conf status | grep -q RUNNING" ]
+                  interval: 5s
+                  retries: 10
+
+              observability_ui:
+                container_name: user-interface
+                image: ${DK_OBSERVABILITY_UI_IMAGE:-}
+                restart: always
+                depends_on:
+                  observability_backend:
+                    condition: service_healthy
+                environment:
+                  OBSERVABILITY_AUTH_METHOD: ${DK_OBSERVABILITY_AUTH_METHOD:-basic}
+                links:
+                  - "observability_backend:observability-api"
+                  - "observability_backend:event-api"
+                  - "observability_backend:agent-api"
+                ports:
+                  - "${DK_OBSERVABILITY_HTTP_PORT:-8082}:8082"
+
+            networks:
+              datakitchen:
+                name: "${DK_OBSERVABILITY_NETWORK_NAME:-}"
+                external: true
+
+            volumes:
+              mysql_data:
+              kafka_data:
+            """
+        )
+
+        defaults = {
+            "DK_OBSERVABILITY_COMPOSE_NAME": args.compose_project_name,
+            "DK_OBSERVABILITY_MYSQL_PASSWORD": generate_password(),
+            "DK_OBSERVABILITY_MYSQL_ROOT_PASSWORD": generate_password(),
+            "DK_OBSERVABILITY_HTTP_PORT": str(args.port),
+            "DK_OBSERVABILITY_UI_IMAGE": args.ui_image,
+            "DK_OBSERVABILITY_BE_IMAGE": args.be_image,
+            "DK_OBSERVABILITY_NETWORK_NAME": DOCKER_NETWORK,
+        }
+
+        compose_file_content = COMPOSE_VAR_RE.sub(
+            lambda m: f"${{{m.group(1)}:-{defaults.get(m.group(1), m.group(2))}}}",
+            compose_file_content,
+        )
+
+        return compose_file_content
+
+
+class ObsInstallAction(AnalyticsMultiStepAction, ComposeActionMixin):
     steps = [
+        ComposeVerifyExistingInstallStep,
         DockerNetworkStep,
-        MinikubeProfileStep,
-        SetupHelmReposStep,
-        ObsHelmInstallServicesStep,
-        ObsHelmInstallPlatformStep,
+        ObsCreateComposeFileStep,
+        ComposePullImagesStep,
+        ObsComposeStartStep,
         ObsDataInitializationStep,
         ObsGenerateDemoConfigStep,
     ]
 
     label = "Installation"
     title = "Install Observability"
-    intro_text = ["This process may take 5~30 minutes depending on your system resources and network speed."]
+    intro_text = ["This process may take 5~15 minutes depending on your system resources and network speed."]
 
     args_cmd = "install"
-    args_parser_parents = [minikube_parser]
-    requirements = [REQ_HELM, REQ_MINIKUBE, REQ_MINIKUBE_DRIVER]
-
-    def __init__(self):
-        super().__init__()
-        self.ctx = {}
-
-    def execute_with_log(self, args):
-        if args.driver == "docker":
-            self.requirements.append(REQ_DOCKER_DAEMON)
-
-        return super().execute_with_log(args)
-
-    def get_parser(self, sub_parsers):
-        parser = super().get_parser(sub_parsers)
-        parser.add_argument(
-            "--memory",
-            type=str,
-            action="store",
-            default=DEFAULT_OBS_MEMORY,
-            help="Memory to be used for minikube cluster. Defaults to '%(default)s'",
-        )
-        parser.add_argument(
-            "--driver",
-            type=str,
-            action="store",
-            default="docker",
-            help="Minikube driver to be used. Defaults to '%(default)s'",
-        )
-        parser.add_argument(
-            "--helm-timeout",
-            type=int,
-            action="store",
-            default=HELM_DEFAULT_TIMEOUT,
-            help=(
-                "Maximum amount of time in minutes that helm will be allowed to install a release. "
-                "Defaults to '%(default)s'"
-            ),
-        )
-        parser.add_argument(
-            "--svc-values",
-            type=str,
-            action="store",
-            help="Override values for supporting services Helm install. Specify path to a YAML file or URL.",
-        )
-        parser.add_argument(
-            "--app-values",
-            type=str,
-            action="store",
-            help="Override values for app Helm install. Specify path to a YAML file or URL.",
-        )
-        parser.add_argument(
-            "--docker-username",
-            type=str,
-            action="store",
-            help="Docker username for pulling app images.",
-        )
-        parser.add_argument(
-            "--docker-password",
-            type=str,
-            action="store",
-            help="Docker password for pulling app images.",
-        )
-        return parser
-
-
-class ObsExposeAction(Action):
-    args_cmd = "expose"
-    args_parser_parents = [minikube_parser]
-    requirements = [REQ_MINIKUBE]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
         parser.add_argument(
             "--port",
+            dest="port",
+            action="store",
+            default=OBS_DEFAULT_PORT,
+            help="Which port will be used to access Observability UI. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--pull-timeout",
             type=int,
             action="store",
-            default=DEFAULT_EXPOSE_PORT,
-            help="Which port to listen to",
+            default=OBS_PULL_TIMEOUT,
+            help=(
+                "Maximum amount of time in minutes that Docker will be allowed to pull the images. "
+                "Defaults to '%(default)s'"
+            ),
         )
-        return parser
-
-    def execute(self, args):
-        CONSOLE.title("Expose Observability ports")
-
-        success = False
-        with self.start_cmd(
-            "minikube",
-            "kubectl",
-            "--profile",
-            args.profile,
-            "--",
-            "--namespace",
-            args.namespace,
-            "--address",
-            "0.0.0.0",
-            "port-forward",
-            "service/observability-ui",
-            f"{args.port}:http",
-            raise_on_non_zero=False,
-        ) as (proc, stdout, stderr):
-            for output in stdout:
-                if output:
-                    break
-
-            if proc.poll() is None:
-                url = f"http://localhost:{args.port}"
-                for service, label in SERVICES_LABELS.items():
-                    CONSOLE.msg(f"{label:>20}: {SERVICES_URLS[service].format(url)}")
-                CONSOLE.space()
-                CONSOLE.msg("Listening on all interfaces (0.0.0.0)")
-                CONSOLE.msg("Keep this process running while using the above URLs")
-                CONSOLE.msg("Press Ctrl + C to stop exposing the ports")
-
-                try:
-                    with open(self.data_folder / DEMO_CONFIG_FILE, "r") as file:
-                        json_config = json.load(file)
-                        json_config["api_host"] = BASE_API_URL_TPL.format(f"http://host.docker.internal:{args.port}")
-
-                    with open(self.data_folder / DEMO_CONFIG_FILE, "w") as file:
-                        file.write(json.dumps(json_config))
-                except Exception:
-                    LOG.exception(f"Unable to update {DEMO_CONFIG_FILE} file with exposed port")
-
-                while True:
-                    try:
-                        proc.wait(10)
-                    except subprocess.TimeoutExpired:
-                        continue
-                    except KeyboardInterrupt:
-                        # The empty print forces the terminal cursor to move to the first column
-                        print()
-                        proc.terminate()
-                        success = True
-                        break
-                    else:
-                        break
-
-        if success:
-            CONSOLE.msg("The services are no longer exposed.")
-        else:
-            for output in stderr:
-                CONSOLE.msg(output)
-
-            CONSOLE.space()
-            CONSOLE.msg("The platform could not have its ports exposed.")
-            CONSOLE.msg(
-                f"Verify if the platform is running and installer has permission to listen at the port {args.port}."
-            )
-            CONSOLE.space()
-            CONSOLE.msg(f"If port {args.port} is in use, use the command option --port to specify an alternate value.")
-            raise AbortAction
-
-
-class ObsDeleteAction(Action):
-    args_cmd = "delete"
-    args_parser_parents = [minikube_parser]
-    requirements = [REQ_MINIKUBE]
-
-    def execute(self, args):
-        CONSOLE.title("Delete Observability instance")
-        try:
-            self.run_cmd("minikube", "-p", args.profile, "delete")
-        except CommandFailed:
-            LOG.exception("Error deleting minikube profile")
-            CONSOLE.msg("Could NOT delete the minikube profile")
-        else:
-            delete_file(self.data_folder / DEMO_CONFIG_FILE)
-            delete_file(self.data_folder / CREDENTIALS_FILE.format(args.prod))
-
-            try:
-                self.run_cmd(
-                    "docker",
-                    "network",
-                    "rm",
-                    DOCKER_NETWORK,
-                )
-            except CommandFailed:
-                LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
-                pass
-
-            CONSOLE.msg("Minikube profile deleted")
+        parser.add_argument(
+            "--be-image",
+            dest="be_image",
+            action="store",
+            default=OBS_DEF_BE_IMAGE,
+            help="Observability backend image to use for the install. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--ui-image",
+            dest="ui_image",
+            action="store",
+            default=OBS_DEF_UI_IMAGE,
+            help="Observability UI image to use for the install. Defaults to %(default)s",
+        )
 
 
 class DemoContainerAction(Action):
@@ -1633,25 +1647,6 @@ class ObsRunHeartbeatDemoAction(DemoContainerAction):
         CONSOLE.msg("Observability Heartbeat demo stopped")
 
 
-class TestGenVerifyExistingInstallStep(Step):
-    label = "Verifying existing installation"
-
-    def pre_execute(self, action, args):
-        tg_status = get_testgen_status(action)
-        tg_volumes = get_testgen_volumes(action)
-        if tg_status or tg_volumes:
-            CONSOLE.msg("Found TestGen docker compose containers and/or volumes. If a previous attempt to run this")
-            CONSOLE.msg(
-                f"installer failed, please run `python3 {INSTALLER_NAME} {args.prod} delete` before trying again."
-            )
-            CONSOLE.space()
-            if tg_volumes:
-                tg_status["Volumes"] = ", ".join([v.get("Name", "N/A") for v in tg_volumes])
-            for k, v in tg_status.items():
-                CONSOLE.msg(f"{k:>15}: {v}")
-            raise AbortAction
-
-
 class UpdateComposeFileStep(Step):
     label = "Updating the Docker compose file"
 
@@ -1666,7 +1661,7 @@ class UpdateComposeFileStep(Step):
 
         CONSOLE.space()
 
-        contents = action.docker_compose_file_path.read_text()
+        contents = action.get_compose_file_path(args).read_text()
         if args.skip_verify:
             self.update_version = True
         else:
@@ -1675,7 +1670,7 @@ class UpdateComposeFileStep(Step):
                     "docker",
                     "compose",
                     "-f",
-                    action.docker_compose_file_path,
+                    action.get_compose_file_path(args),
                     "exec",
                     "engine",
                     "testgen",
@@ -1726,7 +1721,7 @@ class UpdateComposeFileStep(Step):
         if not any((self.update_version, self.update_analytics, self.update_token)):
             raise SkipStep
 
-        contents = action.docker_compose_file_path.read_text()
+        contents = action.get_compose_file_path(args).read_text()
         if self.update_version:
             contents = re.sub(r"(image:\s*datakitchen.+:).+\n", rf"\1{TESTGEN_LATEST_TAG}\n", contents)
 
@@ -1753,10 +1748,10 @@ class UpdateComposeFileStep(Step):
             var = f"\n{match.group(1)}TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}"
             contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
 
-        action.docker_compose_file_path.write_text(contents)
+        action.get_compose_file_path(args).write_text(contents)
 
 
-class TestGenCreateDockerComposeFileStep(Step):
+class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
     label = "Creating the docker-compose definition file"
 
     def __init__(self):
@@ -1764,52 +1759,27 @@ class TestGenCreateDockerComposeFileStep(Step):
         self.password = None
 
     def pre_execute(self, action, args):
-        if action.docker_compose_file_path.exists():
+        super().pre_execute(action, args)
+        if action.ctx.get("using_existing"):
             self.username, self.password = self.get_credentials_from_compose_file(
-                action.docker_compose_file_path.read_text()
+                action.get_compose_file_path(args).read_text()
             )
-            action.using_existing = True
         else:
             self.username = DEFAULT_USER_DATA["username"]
             self.password = generate_password()
 
         if not all([self.username, self.password]):
-            CONSOLE.msg(f"Unable to retrieve username and password from {action.docker_compose_file_path.absolute()}")
+            CONSOLE.msg(
+                f"Unable to retrieve username and password from {action.get_compose_file_path(args).absolute()}"
+            )
             raise AbortAction
 
         if args.ssl_cert_file and not args.ssl_key_file or not args.ssl_cert_file and args.ssl_key_file:
             CONSOLE.msg("Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.")
             raise AbortAction
 
-    def execute(self, action, args):
-        action.analytics.additional_properties["used_custom_cert"] = args.ssl_cert_file and args.ssl_key_file
-        action.analytics.additional_properties["existing_compose_file"] = action.using_existing
-        action.analytics.additional_properties["used_custom_image"] = bool(args.image)
-
-        if action.using_existing:
-            LOG.info("Re-using existing [%s]", action.docker_compose_file_path)
-        else:
-            LOG.info(
-                "Creating [%s] for image [%s]",
-                action.docker_compose_file_path,
-                args.image,
-            )
-            self.create_compose_file(
-                action,
-                args,
-                self.username,
-                self.password,
-                ssl_cert_file=args.ssl_cert_file,
-                ssl_key_file=args.ssl_key_file,
-            )
-
     def on_action_success(self, action, args):
-        CONSOLE.space()
-        if action.using_existing:
-            CONSOLE.msg(f"Used existing compose file: {action.docker_compose_file_path}")
-        else:
-            CONSOLE.msg(f"Created new {DOCKER_COMPOSE_FILE} file using image {args.image}")
-
+        super().on_action_success(action, args)
         protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
         cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
         with CONSOLE.tee(cred_file_path) as console_tee:
@@ -1820,11 +1790,6 @@ class TestGenCreateDockerComposeFileStep(Step):
             console_tee(f"Password: {self.password}")
 
         CONSOLE.msg(f"(Credentials also written to {cred_file_path.name} file)")
-
-    def on_action_fail(self, action, args):
-        # We keep the file around for inspection when in debug mode
-        if not args.debug and not action.using_existing:
-            delete_file(action.docker_compose_file_path)
 
     def get_credentials_from_compose_file(self, file_contents):
         username = None
@@ -1838,36 +1803,37 @@ class TestGenCreateDockerComposeFileStep(Step):
                 break
         return username, password
 
-    def create_compose_file(self, action, args, username, password, ssl_cert_file, ssl_key_file):
+    def get_compose_file_contents(self, action, args):
+        action.analytics.additional_properties["used_custom_cert"] = args.ssl_cert_file and args.ssl_key_file
+        action.analytics.additional_properties["used_custom_image"] = args.image != TESTGEN_DEFAULT_IMAGE
+
         ssl_variables = (
             """
               SSL_CERT_FILE: /dk/ssl/cert.crt
               SSL_KEY_FILE: /dk/ssl/cert.key
         """
-            if ssl_cert_file and ssl_key_file
+            if args.ssl_cert_file and args.ssl_key_file
             else ""
         )
         ssl_volumes = (
             f"""
                   - type: bind
-                    source: {ssl_cert_file}
+                    source: {args.ssl_cert_file}
                     target: /dk/ssl/cert.crt
                   - type: bind
-                    source: {ssl_key_file}
+                    source: {args.ssl_key_file}
                     target: /dk/ssl/cert.key 
         """
-            if ssl_cert_file and ssl_key_file
+            if args.ssl_cert_file and args.ssl_key_file
             else ""
         )
 
-        action.docker_compose_file_path.write_text(
-            textwrap.dedent(
-                f"""
-            name: testgen
+        compose_contents = textwrap.dedent(f"""
+            name: {args.compose_project_name}
 
             x-common-variables: &common-variables
-              TESTGEN_USERNAME: {username}
-              TESTGEN_PASSWORD: {password}
+              TESTGEN_USERNAME: {self.username}
+              TESTGEN_PASSWORD: {self.password}
               TG_DECRYPT_SALT: {generate_password()}
               TG_DECRYPT_PASSWORD: {generate_password()}
               TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), "ascii")}
@@ -1899,12 +1865,12 @@ class TestGenCreateDockerComposeFileStep(Step):
                 image: postgres:14.1-alpine
                 restart: always
                 environment:
-                  - POSTGRES_USER={username}
-                  - POSTGRES_PASSWORD={password}
+                  - POSTGRES_USER={self.username}
+                  - POSTGRES_PASSWORD={self.password}
                 volumes:
                   - postgres_data:/var/lib/postgresql/data
                 healthcheck:
-                  test: ["CMD-SHELL", "pg_isready -U {username}"]
+                  test: ["CMD-SHELL", "pg_isready -U {self.username}"]
                   interval: 8s
                   timeout: 5s
                   retries: 3
@@ -1919,110 +1885,8 @@ class TestGenCreateDockerComposeFileStep(Step):
               datakitchen:
                 name: {DOCKER_NETWORK}
                 external: true
-            """
-            )
-        )
-
-
-class TestGenPullImagesStep(Step):
-    label = "Pulling docker images"
-    required = False
-
-    def execute(self, action, args):
-        action.analytics.additional_properties["pull_timeout"] = args.pull_timeout
-
-        try:
-            with action.start_cmd(
-                "docker",
-                "compose",
-                "-f",
-                action.docker_compose_file_path,
-                "pull",
-                "--policy",
-                "always",
-            ) as (proc, _, stderr):
-                complete_re = re.compile(r"^ ([0-9a-f]{12}) (Already exists|Pull complete)")
-                hash_discovery_re = re.compile(r"^ ([0-9a-f]{12}) (Already exists|Pulling fs layer|Waiting)")
-                discovering = True
-                hashes: set[str] = set()
-                completed_count = 0
-                reported = 0
-                try:
-                    for line in stderr:
-                        if disc_match := hash_discovery_re.match(line):
-                            hashes.add(disc_match.group(1))
-                        elif hashes and discovering:
-                            discovering = False
-                        if complete_re.match(line):
-                            completed_count += 1
-                        if not discovering:
-                            to_be_reported = list(range(reported, int(completed_count * 100 / len(hashes)) + 1, 20))[1:]
-                            for progress in to_be_reported:
-                                CONSOLE.partial(f"{progress}% ")
-                                reported = progress
-                except Exception:
-                    pass
-        except CommandFailed:
-            # Pulling the images before starting is not mandatory, so we just proceed if it fails
-            raise SkipStep
-
-    def _collect_images_sha(self, action):
-        images = action.run_cmd(
-            "docker",
-            "compose",
-            "-f",
-            action.docker_compose_file_path,
-            "images",
-            "--format",
-            "json",
-            capture_json=True,
-        )
-        image_repo_tags = [":".join((img["Repository"], img["Tag"])) for img in images]
-        collect_images_digest(action, image_repo_tags)
-
-    def on_action_fail(self, action, args):
-        self._collect_images_sha(action)
-
-    def on_action_success(self, action, args):
-        self._collect_images_sha(action)
-
-
-class TestGenStartStep(Step):
-    label = "Starting docker compose application"
-
-    def execute(self, action, args):
-        action.run_cmd(
-            "docker",
-            "compose",
-            "-f",
-            action.docker_compose_file_path,
-            "up",
-            "--wait",
-        )
-
-    def on_action_fail(self, action, args):
-        if action.args_cmd == "install":
-            action.run_cmd(
-                "docker",
-                "compose",
-                "-f",
-                action.docker_compose_file_path,
-                "down",
-                "--volumes",
-            )
-
-
-class TestGenStopStep(Step):
-    label = "Stopping docker compose application"
-
-    def execute(self, action, args):
-        action.run_cmd(
-            "docker",
-            "compose",
-            "-f",
-            action.docker_compose_file_path,
-            "down",
-        )
+            """)
+        return compose_contents
 
 
 class TestGenUpdateVolumeStep(Step):
@@ -2035,7 +1899,7 @@ class TestGenUpdateVolumeStep(Step):
                 "docker",
                 "compose",
                 "-f",
-                action.docker_compose_file_path,
+                action.get_compose_file_path(args),
                 "run",
                 "--entrypoint",
                 "/bin/sh -c",
@@ -2057,7 +1921,7 @@ class TestGenSetupDatabaseStep(Step):
             "docker",
             "compose",
             "-f",
-            action.docker_compose_file_path,
+            action.get_compose_file_path(args),
             "exec",
             "engine",
             "testgen",
@@ -2073,14 +1937,14 @@ class TestGenUpgradeDatabaseStep(Step):
         self.required = action.args_cmd == "upgrade"
 
     def execute(self, action, args):
-        if action.args_cmd == "install" and action.using_existing:
+        if action.args_cmd == "install" and action.ctx.get("using_existing"):
             raise SkipStep
         else:
             action.run_cmd(
                 "docker",
                 "compose",
                 "-f",
-                action.docker_compose_file_path,
+                action.get_compose_file_path(args),
                 "exec",
                 "engine",
                 "testgen",
@@ -2092,7 +1956,7 @@ class TestGenUpgradeDatabaseStep(Step):
             "docker",
             "compose",
             "-f",
-            action.docker_compose_file_path,
+            action.get_compose_file_path(args),
             "exec",
             "engine",
             "testgen",
@@ -2104,24 +1968,13 @@ class TestGenUpgradeDatabaseStep(Step):
         CONSOLE.msg(f"Application version: {match.group(1)}")
 
 
-class TestgenActionMixin:
-    @property
-    def docker_compose_file_path(self):
-        compose_path = self.data_folder.joinpath(DOCKER_COMPOSE_FILE)
-        try:
-            compose_path = compose_path.relative_to(pathlib.Path().absolute())
-        except ValueError:
-            pass
-        return compose_path
-
-
-class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
+class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
     steps = [
-        TestGenVerifyExistingInstallStep,
+        ComposeVerifyExistingInstallStep,
         DockerNetworkStep,
         TestGenCreateDockerComposeFileStep,
-        TestGenPullImagesStep,
-        TestGenStartStep,
+        ComposePullImagesStep,
+        ComposeStartStep,
         TestGenSetupDatabaseStep,
         TestGenUpgradeDatabaseStep,
     ]
@@ -2132,10 +1985,6 @@ class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
 
     args_cmd = "install"
     requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_IMAGE]
-
-    def __init__(self):
-        super().__init__()
-        self.using_existing = False
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
@@ -2180,13 +2029,13 @@ class TestgenInstallAction(TestgenActionMixin, AnalyticsMultiStepAction):
         return parser
 
 
-class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
+class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
     steps = [
         UpdateComposeFileStep,
-        TestGenStopStep,
-        TestGenPullImagesStep,
+        ComposeStopStep,
+        ComposePullImagesStep,
         TestGenUpdateVolumeStep,
-        TestGenStartStep,
+        ComposeStartStep,
         TestGenUpgradeDatabaseStep,
     ]
 
@@ -2196,8 +2045,7 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
 
     args_cmd = "upgrade"
 
-    @property
-    def requirements(self):
+    def get_requirements(self, args):
         return [
             REQ_DOCKER,
             REQ_DOCKER_DAEMON,
@@ -2207,11 +2055,11 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
                     "docker",
                     "compose",
                     "-f",
-                    str(self.docker_compose_file_path),
+                    str(self.get_compose_file_path(args)),
                     "config",
                 ),
                 (
-                    f"TestGen's Docker configuration file is not available at {self.data_folder.joinpath(self.docker_compose_file_path)}.",
+                    f"TestGen's Docker configuration file is not available at {self.data_folder.joinpath(self.get_compose_file_path(args))}.",
                     "Re-install TestGen and try again.",
                 ),
             ),
@@ -2237,83 +2085,7 @@ class TestgenUpgradeAction(TestgenActionMixin, AnalyticsMultiStepAction):
         )
 
 
-class TestgenDeleteAction(Action, TestgenActionMixin):
-    args_cmd = "delete"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
-
-    def execute(self, args):
-        if self.docker_compose_file_path.exists():
-            self._delete_containers(args)
-            self._delete_network()
-        else:
-            # Trying to delete the network before any exception
-            self._delete_network()
-            # Trying to delete dangling volumes
-            self._delete_volumes()
-
-    def _delete_containers(self, args):
-        CONSOLE.title("Delete TestGen instance")
-        try:
-            self.run_cmd(
-                "docker",
-                "compose",
-                "-f",
-                self.docker_compose_file_path,
-                "down",
-                *([] if args.keep_images else ["--rmi", "all"]),
-                "--volumes",
-                echo=True,
-                raise_on_non_zero=True,
-            )
-        except CommandFailed:
-            CONSOLE.msg("Could NOT delete the Docker resources")
-            raise AbortAction
-        else:
-            if not args.keep_config:
-                delete_file(self.docker_compose_file_path)
-            delete_file(self.data_folder / CREDENTIALS_FILE.format(args.prod))
-            CONSOLE.msg("Docker containers and volumes deleted")
-
-    def _delete_network(self):
-        try:
-            self.run_cmd("docker", "network", "rm", DOCKER_NETWORK, raise_on_non_zero=True)
-        except CommandFailed:
-            LOG.info(f"Could not delete Docker network '{DOCKER_NETWORK}'")
-        else:
-            CONSOLE.msg("Docker network deleted")
-
-    def _delete_volumes(self):
-        if volumes := get_testgen_volumes(self):
-            try:
-                self.run_cmd(
-                    "docker",
-                    "volume",
-                    "rm",
-                    *[v["Name"] for v in volumes],
-                    raise_on_non_zero=True,
-                )
-            except CommandFailed:
-                CONSOLE.msg("Could NOT delete docker volumes. Please delete them manually")
-                raise AbortAction
-            else:
-                CONSOLE.msg("Docker volumes deleted")
-
-    def get_parser(self, sub_parsers):
-        parser = super().get_parser(sub_parsers)
-        parser.add_argument(
-            "--keep-images",
-            action="store_true",
-            help="Does not delete the images when deleting the installation",
-        )
-        parser.add_argument(
-            "--keep-config",
-            action="store_true",
-            help="Does not delete the compose config file when deleting the installation",
-        )
-        return parser
-
-
-class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
+class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
     args_cmd = "run-demo"
 
     def get_parser(self, sub_parsers):
@@ -2332,7 +2104,7 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
 
         CONSOLE.title("Run TestGen demo")
 
-        tg_status = get_testgen_status(self)
+        tg_status = self.get_status(args)
         if not tg_status or not re.match(".*running.*", tg_status["Status"], re.I):
             CONSOLE.msg("Running the TestGen demo requires the platform to be running.")
             raise AbortAction
@@ -2382,7 +2154,7 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
                 "docker",
                 "compose",
                 "-f",
-                self.docker_compose_file_path,
+                self.get_compose_file_path(args),
                 "exec",
                 "engine",
                 *command,
@@ -2391,7 +2163,7 @@ class TestgenRunDemoAction(DemoContainerAction, TestgenActionMixin):
         CONSOLE.msg("Completed creating demo!")
 
 
-class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
+class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
     args_cmd = "delete-demo"
 
     def execute(self, args):
@@ -2402,13 +2174,13 @@ class TestgenDeleteDemoAction(DemoContainerAction, TestgenActionMixin):
             pass
 
         CONSOLE.msg("Cleaning up system database..")
-        tg_status = get_testgen_status(self)
+        tg_status = self.get_status(args)
         if tg_status:
             self.run_cmd(
                 "docker",
                 "compose",
                 "-f",
-                self.docker_compose_file_path,
+                self.get_compose_file_path(args),
                 "exec",
                 "engine",
                 "testgen",
@@ -2431,8 +2203,9 @@ class AccessInstructionsAction(Action):
         try:
             info = credendials_path.read_text()
         except Exception:
-            product = "TestGen" if args.prod == "tg" else "Observability"
-            CONSOLE.msg(f"No {product} access information found in {credendials_path}. Is {product} installed?")
+            CONSOLE.msg(
+                f"No {args.prod_name} access information found in {credendials_path}. Is {args.prod_name} installed?"
+            )
         else:
             for line in info.splitlines():
                 CONSOLE.msg(line)
@@ -2474,7 +2247,6 @@ def show_menu(installer):
     obs_menu.add_option("Install Observability", ["obs", "install"])
     obs_menu.add_option("Upgrade Observability", ["obs", "upgrade"])
     obs_menu.add_option("Access Installed App", ["obs", "access-info"])
-    obs_menu.add_option("Expose web access", ["obs", "expose"])
     obs_menu.add_option("Install Observability demo data", ["obs", "run-demo"])
     obs_menu.add_option("Delete Observability demo data", ["obs", "delete-demo"])
     obs_menu.add_option("Run heartbeat demo", ["obs", "run-heartbeat-demo"])
@@ -2507,13 +2279,18 @@ def get_installer_instance():
         "obs",
         [
             ObsInstallAction(),
-            ObsExposeAction(),
+            ObsUpgradeAction(),
             AccessInstructionsAction(),
-            ObsDeleteAction(),
+            ComposeDeleteAction(),
             ObsRunDemoAction(),
             ObsDeleteDemoAction(),
             ObsRunHeartbeatDemoAction(),
         ],
+        defaults={
+            "prod_name": "Observability",
+            "compose_file_name": "obs-docker-compose.yml",
+            "compose_project_name": "dataops-observability",
+        },
     )
 
     installer_instance.add_product(
@@ -2522,10 +2299,15 @@ def get_installer_instance():
             TestgenInstallAction(),
             TestgenUpgradeAction(),
             AccessInstructionsAction(),
-            TestgenDeleteAction(),
+            ComposeDeleteAction(),
             TestgenRunDemoAction(),
             TestgenDeleteDemoAction(),
         ],
+        defaults={
+            "prod_name": "TestGen",
+            "compose_file_name": "docker-compose.yml",
+            "compose_project_name": "dataops-testgen",
+        },
     )
     return installer_instance
 

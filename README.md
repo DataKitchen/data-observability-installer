@@ -49,17 +49,11 @@ And it allows you to <b>make fast, safe development changes</b>.
 
 #### Requirements for TestGen & Observability
 
-| Software                | Tested Versions               | Command to check version                |
-|-------------------------|-------------------------|-------------------------------|
-| [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12                | `python3 --version`                |
-| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 26.1, 27.5, 28.1 <br/> 2.34, 2.35, 2.36        | `docker -v` <br/> `docker compose version`         |
+| Software                | Tested Versions                         | Command to check version                |
+|-------------------------|-----------------------------------------|-------------------------------|
+| [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12, 3.13             | `python3 --version`                |
+| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 26.1, 27.5, 28.5 <br/> 2.38, 2.39, 2.40 | `docker -v` <br/> `docker compose version`         |
 
-#### Additional Requirements for Observability only
-
-| Software                | Tested Versions               | Command to check version                |
-|-------------------------|-------------------------|-------------------------------|
-| [Minikube](https://minikube.sigs.k8s.io/docs/start/)         | 1.33, 1.34, 1.35                | `minikube version`                |
-| [Helm](https://helm.sh/docs/intro/install/)            | 3.15, 3.16, 3.17        | `helm version`         |
 
 ### Download the installer
 
@@ -96,17 +90,11 @@ Once the installation completes, verify that you can login to the UI with the UR
 
 ### Install the Observability application
 
-The installation downloads the latest Helm charts and Docker images for Observability and deploys the application on a new minikube cluster. The process may take 5~30 minutes depending on your machine and network connection. 
+The installation downloads the latest Docker images for Observability and deploys the application using Docker. The process may take 5~15 minutes depending on your machine and network connection. 
 ```shell
 python3 dk-installer.py obs install
 ```
-#### Bind HTTP ports to host machine
 
-This step is required to access the application when using Docker driver on Mac or Windows. It may also be useful for installations on remote machines to access the UI from a local browser.
-
-```shell
-python3 dk-installer.py obs expose
-```
 The `--port` option may be used to set a custom localhost port for the application (default: 8082).
 
 Verify that you can login to the UI with the URL and credentials provided in the output. Leave this process running, and continue the next steps on another terminal window.
@@ -162,15 +150,9 @@ Upgrade the app to latest version: `python3 dk-installer.py tg upgrade`
 
 ### DataOps Observability
 
-The [minikube](https://minikube.sigs.k8s.io/docs/commands/) and [kubectl](https://kubernetes.io/docs/reference/kubectl/) command line tools can be used to operate the Observability application.
+Stop the app: `docker compose -f obs-docker-compose.yml obs down`
 
-Inspect the pods: `kubectl get pods`
-
-Get pod logs: `kubectl logs <POD ID>`
-
-Stop the app: `minikube stop`
-
-Restart the app: `minikube start`
+Restart the app: `docker compose -f obs-docker-compose.yml up`
 
 ## Remove Demo Data 
 

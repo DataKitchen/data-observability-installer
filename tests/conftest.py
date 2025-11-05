@@ -126,7 +126,7 @@ def demo_config_path(tmp_data_folder):
 
 @pytest.fixture
 def compose_path(tmp_data_folder):
-    return Path(tmp_data_folder).joinpath("docker-compose.yml")
+    return Path(tmp_data_folder).joinpath("test-compose.yml")
 
 
 @pytest.fixture
@@ -165,26 +165,24 @@ def args_mock():
     ns.send_analytics_data = True
     ns.debug = False
 
+    # Compose defaults
+    ns.prod_name = "Compose Product"
+    ns.compose_project_name = "test-project"
+    ns.compose_file_name = "test-compose.yml"
+    ns.port = 8501
+    ns.keep_images = False
+    ns.keep_config = False
+    ns.skip_verify = False
+
     # TestGen defaults
     ns.pull_timeout = 10
     ns.ssl_key_file = None
     ns.ssl_cert_file = None
     ns.image = TESTGEN_DEFAULT_IMAGE
-    ns.port = 8501
-    ns.keep_images = False
-    ns.keep_config = False
     ns.obs_export = False
-    ns.skip_verify = False
 
     # Observability defaults
-    ns.profile = "dk-observability"
-    ns.namespace = "datakitchen"
-    ns.driver = "docker"
-    ns.memory = "4096m"
-    ns.helm_timeout = 10
-    ns.svc_values = None
-    ns.app_values = None
-    ns.docker_username = None
-    ns.docker_password = None
+    ns.ui_image = "datakitchen/dataops-observability-ui:v2"
+    ns.be_image = "datakitchen/dataops-observability-be:v2"
 
     yield ns
