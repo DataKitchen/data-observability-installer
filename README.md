@@ -49,10 +49,10 @@ And it allows you to <b>make fast, safe development changes</b>.
 
 #### Requirements for TestGen & Observability
 
-| Software                | Tested Versions               | Command to check version                |
-|-------------------------|-------------------------|-------------------------------|
-| [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12                | `python3 --version`                |
-| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 26.1, 27.5, 28.1 <br/> 2.34, 2.35, 2.36        | `docker -v` <br/> `docker compose version`         |
+| Software                | Tested Versions                         | Command to check version                |
+|-------------------------|-----------------------------------------|-------------------------------|
+| [Python](https://www.python.org/downloads/) <br/>- Most Linux and macOS systems have Python pre-installed. <br/>- On Windows machines, you will need to download and install it.        | 3.9, 3.10, 3.11, 3.12, 3.13             | `python3 --version`                |
+| [Docker](https://docs.docker.com/get-docker/) <br/>[Docker Compose](https://docs.docker.com/compose/install/)         | 26.1, 27.5, 28.5 <br/> 2.38, 2.39, 2.40 | `docker -v` <br/> `docker compose version`         |
 
 
 ### Download the installer

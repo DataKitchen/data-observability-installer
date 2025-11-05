@@ -1464,7 +1464,6 @@ class ObsCreateComposeFileStep(CreateComposeFileStepBase):
               observability_data_init:
                 container_name: data-init
                 image: ${DK_OBSERVABILITY_BE_IMAGE:-}
-                pull_policy: never # XXX
                 restart: on-failure
                 depends_on:
                   database:
@@ -1480,7 +1479,6 @@ class ObsCreateComposeFileStep(CreateComposeFileStepBase):
               observability_backend:
                 container_name: back-end
                 image: ${DK_OBSERVABILITY_BE_IMAGE:-}
-                pull_policy: never # XXX
                 restart: always
                 depends_on:
                   observability_data_init:
@@ -1499,7 +1497,6 @@ class ObsCreateComposeFileStep(CreateComposeFileStepBase):
               observability_ui:
                 container_name: user-interface
                 image: ${DK_OBSERVABILITY_UI_IMAGE:-}
-                pull_policy: never # XXX
                 restart: always
                 depends_on:
                   observability_backend:
