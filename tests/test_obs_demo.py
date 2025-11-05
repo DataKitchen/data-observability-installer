@@ -1,4 +1,4 @@
-from unittest.mock import call
+from unittest.mock import call, patch
 
 import pytest
 
@@ -44,3 +44,14 @@ def test_obs_demo_action(action_class, arg_action, demo_cmd, args_mock, start_cm
         ],
         any_order=True,
     )
+
+
+@pytest.mark.unit
+def test_obs_heartbeat_demo_stop(args_mock, start_cmd_mock, demo_config_path):
+    action = ObsRunHeartbeatDemoAction()
+    with patch.object(action, "run_dk_demo_container") as run_demo_cmd_mock:
+        run_demo_cmd_mock.side_effect = KeyboardInterrupt
+
+        action.execute(args_mock)
+
+    run_demo_cmd_mock.assert_called_with("obs-heartbeat-demo")
