@@ -1643,8 +1643,10 @@ class ObsRunHeartbeatDemoAction(DemoContainerAction):
 
     def execute(self, args):
         CONSOLE.title("Run Observability Heartbeat demo")
-        self.run_dk_demo_container("obs-heartbeat-demo")
-        CONSOLE.msg("Observability Heartbeat demo stopped")
+        try:
+            self.run_dk_demo_container("obs-heartbeat-demo")
+        except KeyboardInterrupt:
+            CONSOLE.msg("Observability Heartbeat demo stopped")
 
 
 class UpdateComposeFileStep(Step):
