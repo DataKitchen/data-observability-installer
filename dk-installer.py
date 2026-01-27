@@ -1859,7 +1859,8 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
                 extra_hosts:
                   - host.docker.internal:host-gateway
                 depends_on:
-                  - postgres
+                  postgres:
+                    condition: service_healthy
                 networks:
                   - datakitchen
 
