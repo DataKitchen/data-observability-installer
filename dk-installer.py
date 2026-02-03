@@ -139,6 +139,13 @@ def get_installer_version():
         return "N/A"
 
 
+def simplify_path(path: pathlib.Path) -> pathlib.Path:
+    try:
+        return path.relative_to(pathlib.Path().absolute())
+    except ValueError:
+        return path
+
+
 @contextlib.contextmanager
 def stream_iterator(proc: subprocess.Popen, stream_name: str, file_path: pathlib.Path, timeout: float = 1.0):
     comm_index, exc_attr = {
@@ -543,7 +550,7 @@ class Action:
             CONSOLE.msg(f"Command '{exception.cmd}' failed with code {exception.ret_code}. See the output below.")
             CONSOLE.print_log(log_path)
 
-        msg_file_path = self.session_zip.relative_to(pathlib.Path().absolute())
+        msg_file_path = simplify_path(self.session_zip)
         CONSOLE.space()
         CONSOLE.msg("For assistance, send the logs to open-source-support@datakitchen.io or reach out")
         CONSOLE.msg("to the #support channel on https://data-observability-slack.datakitchen.io/join.")
@@ -981,12 +988,7 @@ class AnalyticsMultiStepAction(MultiStepAction):
 
 class ComposeActionMixin:
     def get_compose_file_path(self, args):
-        compose_path = self.data_folder.joinpath(args.compose_file_name)
-        try:
-            compose_path = compose_path.relative_to(pathlib.Path().absolute())
-        except ValueError:
-            pass
-        return compose_path
+        return simplify_path(self.data_folder.joinpath(args.compose_file_name))
 
     def get_status(self, args) -> dict[str, str]:
         compose_installs = self.run_cmd("docker", "compose", "ls", "--format=json", capture_json=True)
@@ -1619,6 +1621,9 @@ class ObsRunDemoAction(DemoContainerAction):
 
     def execute(self, args):
         CONSOLE.title("Run Observability demo")
+        CONSOLE.msg("This process may take 2~5 minutes depending on your system resources and network speed.")
+        CONSOLE.space()
+
         try:
             self.run_dk_demo_container("obs-run-demo")
         except Exception:
@@ -2112,11 +2117,14 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
             CONSOLE.msg("Running the TestGen demo requires the platform to be running.")
             raise AbortAction
 
-        if args.obs_export:
-            if not (self.data_folder / DEMO_CONFIG_FILE).exists():
-                CONSOLE.msg("Observability demo configuration missing.")
-                raise AbortAction
+        if args.obs_export and not (self.data_folder / DEMO_CONFIG_FILE).exists():
+            CONSOLE.msg("Observability demo configuration missing.")
+            raise AbortAction
 
+        CONSOLE.msg("This process may take up to 3 minutes depending on your system resources and network speed.")
+        CONSOLE.space()
+
+        if args.obs_export:
             self.run_dk_demo_container("tg-run-demo")
 
         quick_start_command = [
@@ -2163,7 +2171,7 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
                 *command,
             )
 
-        CONSOLE.msg("Completed creating demo!")
+        CONSOLE.title("Demo SUCCEEDED")
 
 
 class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
