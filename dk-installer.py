@@ -46,7 +46,7 @@ DEMO_CONTAINER_NAME = "dk-demo"
 
 BASE_API_URL_TPL = "http://host.docker.internal:{}/api"
 CREDENTIALS_FILE = "dk-{}-credentials.txt"
-TESTGEN_LATEST_TAG = "v4"
+TESTGEN_LATEST_TAG = "v5"
 TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 5
 TESTGEN_PULL_RETRIES = 3
