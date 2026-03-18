@@ -974,7 +974,7 @@ class AnalyticsMultiStepAction(MultiStepAction):
     ANALYTICS_DISCLAIMER = [
         "DataKitchen has enabled anonymous aggregate user behavior analytics.",
         "Read the analytics documentation (and how to opt-out) here:",
-        "https://docs.datakitchen.io/articles/#!datakitchen-resources/anonymous-analytics",
+        "https://docs.datakitchen.io/testgen/anonymous-analytics/",
     ]
 
     def _print_intro_text(self, args):

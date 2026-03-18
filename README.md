@@ -1,14 +1,14 @@
 # DataKitchen Data Observability Installer 
 ![apache 2.0 license Badge](https://img.shields.io/badge/License%20-%20Apache%202.0%20-%20blue) 
 ![PRs Badge](https://img.shields.io/badge/PRs%20-%20Welcome%20-%20green) 
-[![Documentation](https://img.shields.io/badge/docs-On%20datakitchen.io-06A04A?style=flat)](https://docs.datakitchen.io/articles/#!open-source-data-observability/data-observability-overview) 
+[![Documentation](https://img.shields.io/badge/docs-On%20datakitchen.io-06A04A?style=flat)](https://docs.datakitchen.io/tutorials/quickstart-demo/) 
 [![Static Badge](https://img.shields.io/badge/Slack-Join%20Discussion-blue?style=flat&logo=slack)](https://data-observability-slack.datakitchen.io/join)
 
 *<p style="text-align: center;">Data breaks. Servers break. Your toolchain breaks. Ensure your data team is the first to know and the first to solve with visibility across and down your data estate. Save time with simple, fast data quality test generation and execution. Trust your data, tools, and systems from end to end.</p>*
 
 This repo contains the installer and quickstart setup for the DataKitchen Open Source Data Observability product suite.
-* [**DataOps Data Quality TestGen**](https://docs.datakitchen.io/articles/dataops-testgen-help/dataops-testgen-help) is a data quality verification tool that does five main tasks: (1) data profiling, (2) new dataset screening and hygiene review, (3) algorithmic generation of data quality validation tests, (4) ongoing production testing of new data refreshes and (5) continuous periodic monitoring of datasets for anomalies.
-* [**DataOps Observability**](https://docs.datakitchen.io/articles/dataops-observability-help/dataops-observability-help) monitors every tool used in the data journey, from source to customer value, across all  environments, tools, teams, datasets, and databases, enabling immediate detection, localization, and understanding of problems.
+* [**DataOps Data Quality TestGen**](https://docs.datakitchen.io/testgen/what-is-testgen/) is a data quality verification tool that does five main tasks: (1) data profiling, (2) new dataset screening and hygiene review, (3) algorithmic generation of data quality validation tests, (4) ongoing production testing of new data refreshes and (5) continuous periodic monitoring of datasets for anomalies.
+* [**DataOps Observability**](https://docs.datakitchen.io/observability/what-is-observability/) monitors every tool used in the data journey, from source to customer value, across all  environments, tools, teams, datasets, and databases, enabling immediate detection, localization, and understanding of problems.
 
 
 [![DataKitchen Open Source Data Observability](https://datakitchen.io/wp-content/uploads/2024/04/both-products.png)](https://datakitchen.storylane.io/share/byag8vimd5tn)
@@ -71,7 +71,7 @@ On Windows operating systems, you can also download the executable file [`dk-ins
 
 ## Quickstart Guide
 
-The [Data Observability quickstart](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview) walks you through Dataops Observability and TestGen capabilities to demonstrate how our products cover critical use cases for data and analytic teams.
+The [Data Observability quickstart](https://docs.datakitchen.io/tutorials/quickstart-demo/) walks you through Dataops Observability and TestGen capabilities to demonstrate how our products cover critical use cases for data and analytic teams.
 
 Before going through the quickstart, complete the prequisites above and then the following steps to install the two products and setup the demo data. For any of the commands, you can view additional options by appending `--help` at the end.
 
@@ -126,13 +126,13 @@ python3 dk-installer.py obs run-heartbeat-demo
 ```
 In the Observability UI, you will see that new agents have been generated on the Integrations page.
 
-Leave this process running, and continue with the [quickstart guide](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview) to tour the applications.
+Leave this process running, and continue with the [quickstart guide](https://docs.datakitchen.io/tutorials/quickstart-demo/) to tour the applications.
 
 ## Product Documentation
 
-[DataOps TestGen](https://docs.datakitchen.io/articles/dataops-testgen-help/dataops-testgen-help)
+[DataOps TestGen](https://docs.datakitchen.io/testgen/what-is-testgen/)
 
-[DataOps Observability](https://docs.datakitchen.io/articles/dataops-observability-help/dataops-observability-help)
+[DataOps Observability](https://docs.datakitchen.io/observability/what-is-observability/)
 
 ## Useful Commands
 
@@ -200,7 +200,7 @@ python3 dk-installer.py obs delete
 ## Community
 
 ### Getting Started Guide
-We recommend you review the [Data Observability Overview Demo](https://docs.datakitchen.io/articles/open-source-data-observability/data-observability-overview).
+We recommend you review the [Data Observability Overview Demo](https://docs.datakitchen.io/tutorials/quickstart-demo/).
 
 ### Support
 For support requests, [join the Data Observability Slack](https://data-observability-slack.datakitchen.io/join) and ask post on #support channel.
