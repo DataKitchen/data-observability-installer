@@ -86,3 +86,27 @@ def test_tg_create_compose_file_abort_args(arg_to_set, tg_install_action, stdout
     console_msg_mock.assert_any_msg_contains(
         "Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.",
     )
+
+
+@pytest.mark.integration
+def test_tg_compose_contains_base_url(tg_install_action, start_cmd_mock, stdout_mock, compose_path):
+    tg_install_action.execute()
+    contents = compose_path.read_text()
+    assert "TG_UI_BASE_URL: http://localhost:8501" in contents
+
+
+@pytest.mark.integration
+def test_tg_compose_base_url_custom_port(tg_install_action, start_cmd_mock, stdout_mock, args_mock, compose_path):
+    args_mock.port = 9000
+    tg_install_action.execute()
+    contents = compose_path.read_text()
+    assert "TG_UI_BASE_URL: http://localhost:9000" in contents
+
+
+@pytest.mark.integration
+def test_tg_compose_base_url_ssl(tg_install_action, start_cmd_mock, stdout_mock, args_mock, compose_path):
+    args_mock.ssl_cert_file = "/path/to/cert.crt"
+    args_mock.ssl_key_file = "/path/to/cert.key"
+    tg_install_action.execute()
+    contents = compose_path.read_text()
+    assert "TG_UI_BASE_URL: https://localhost:8501" in contents
