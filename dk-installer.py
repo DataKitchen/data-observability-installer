@@ -89,6 +89,11 @@ COMPOSE_VAR_RE = re.compile(r"\$\{(\w+):-([^\}]*)\}")
 #
 
 
+def _get_tg_base_url(args):
+    protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
+    return f"{protocol}://localhost:{args.port}"
+
+
 def collect_images_digest(action, images, env=None):
     if images:
         action.run_cmd(
@@ -1661,6 +1666,7 @@ class UpdateComposeFileStep(Step):
         self.update_version = False
         self.update_analytics = False
         self.update_token = False
+        self.update_base_url = False
         super().__init__()
 
     def pre_execute(self, action, args):
@@ -1720,12 +1726,19 @@ class UpdateComposeFileStep(Step):
 
         self.update_token = "TG_JWT_HASHING_KEY" not in contents
 
-        if not any((self.update_version, self.update_analytics, self.update_token)):
+        self.update_base_url = "TG_UI_BASE_URL" not in contents
+        if self.update_base_url:
+            port_match = re.search(r"- (\d+):8501", contents)
+            port = port_match.group(1) if port_match else str(TESTGEN_DEFAULT_PORT)
+            protocol = "https" if "SSL_CERT_FILE" in contents else "http"
+            self._base_url = f"{protocol}://localhost:{port}"
+
+        if not any((self.update_version, self.update_analytics, self.update_token, self.update_base_url)):
             CONSOLE.msg("No changes will be applied.")
             raise AbortAction
 
     def execute(self, action, args):
-        if not any((self.update_version, self.update_analytics, self.update_token)):
+        if not any((self.update_version, self.update_analytics, self.update_token, self.update_base_url)):
             raise SkipStep
 
         contents = action.get_compose_file_path(args).read_text()
@@ -1754,6 +1767,11 @@ class UpdateComposeFileStep(Step):
             match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
             var = f"\n{match.group(1)}TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}"
             contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+
+        if self.update_base_url:
+            match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
+            var = f"\n{match.group(1)}TG_UI_BASE_URL: {self._base_url}"
+            contents = contents[0 : match.end()] + var + contents[match.end() :]
 
         action.get_compose_file_path(args).write_text(contents)
 
@@ -1787,10 +1805,9 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
 
     def on_action_success(self, action, args):
         super().on_action_success(action, args)
-        protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
         cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
         with CONSOLE.tee(cred_file_path) as console_tee:
-            console_tee(f"User Interface: {protocol}://localhost:{args.port}")
+            console_tee(f"User Interface: {_get_tg_base_url(args)}")
             console_tee("CLI Access: docker compose exec engine bash")
             console_tee("")
             console_tee(f"Username: {self.username}")
@@ -1849,6 +1866,7 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
               TG_INSTANCE_ID: {action.analytics.get_instance_id()}
               TG_ANALYTICS: {"yes" if args.send_analytics_data else "no"}
+              TG_UI_BASE_URL: {_get_tg_base_url(args)}
               {ssl_variables}
 
             services:

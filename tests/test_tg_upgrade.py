@@ -125,7 +125,9 @@ def test_tg_upgrade_abort(
 ):
     args_mock.skip_verify = False
     set_version_check_mock(version_check_mock, "1.0.0")
-    initial_compose_content = get_compose_content("TG_INSTANCE_ID: test-instance-id")
+    initial_compose_content = get_compose_content(
+        "TG_INSTANCE_ID: test-instance-id", "TG_UI_BASE_URL: http://localhost:8501"
+    )
     compose_path.write_text(initial_compose_content)
 
     with pytest.raises(AbortAction):
@@ -186,3 +188,43 @@ def test_tg_upgrade_disable_analytics(
     assert "TG_ANALYTICS: no" in compose_content
     assert "image: datakitchen/dataops-testgen:v2.14.5" in compose_content
     console_msg_mock.assert_any_msg_contains("Application is already up-to-date.")
+
+
+@pytest.mark.integration
+def test_tg_upgrade_adds_base_url(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    set_version_check_mock(version_check_mock, "1.0.0")
+    compose_path.write_text(get_compose_content("TG_INSTANCE_ID: test-instance-id"))
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "TG_UI_BASE_URL: http://localhost:8501" in compose_content
+
+
+@pytest.mark.integration
+def test_tg_upgrade_preserves_existing_base_url(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    args_mock.skip_verify = True
+    set_version_check_mock(version_check_mock, "1.1.0")
+    compose_path.write_text(
+        get_compose_content("TG_INSTANCE_ID: test-instance-id", "TG_UI_BASE_URL: https://custom.example.com")
+    )
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "TG_UI_BASE_URL: https://custom.example.com" in compose_content
+    assert compose_content.count("TG_UI_BASE_URL") == 1
