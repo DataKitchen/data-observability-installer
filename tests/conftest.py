@@ -134,6 +134,7 @@ def action_cls(analytics_mock):
     with (
         patch.object(Action, "session_zip", create=True),
         patch.object(Action, "session_folder", create=True),
+        patch.object(Action, "logs_folder", create=True),
         patch.object(Action, "_cmd_idx", create=True, new=0),
         patch.object(Action, "configure_logging", create=True),
         patch.object(Action, "init_session_folder", create=True),
@@ -173,14 +174,18 @@ def args_mock():
     ns.api_port = 8530
     ns.keep_images = False
     ns.keep_config = False
+    ns.keep_data = False
     ns.skip_verify = False
 
     # TestGen defaults
-    ns.pull_timeout = 10
+    ns.pull_timeout = 5
     ns.ssl_key_file = None
     ns.ssl_cert_file = None
     ns.image = TESTGEN_DEFAULT_IMAGE
     ns.obs_export = False
+    ns.install_mode = None
+    ns.no_demo = False
+    ns.api_port = 8530
 
     # Observability defaults
     ns.ui_image = "datakitchen/dataops-observability-ui:v2"

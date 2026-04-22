@@ -6,6 +6,7 @@
 .dk-installer
 demo-config.json
 dk-*-credentials.txt
+dk-*-install.json
 
 # Docker
 docker-compose.yml
@@ -24,3 +25,10 @@ build/
 dist/
 *.egg-info/
 dk-installer.spec
+
+# Claude
+.claude/.local/
+
+# UV
+bin/
+uv.lock
