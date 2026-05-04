@@ -51,6 +51,7 @@ TESTGEN_DEFAULT_IMAGE = f"datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}"
 TESTGEN_PULL_TIMEOUT = 5
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
+TESTGEN_DEFAULT_API_PORT = 8530
 TESTGEN_LATEST_VERSIONS_URL = (
     "https://dk-support-external.s3.us-east-1.amazonaws.com/testgen-observability/testgen-latest-versions.json"
 )
@@ -1728,17 +1729,38 @@ class UpdateComposeFileStep(Step):
 
         self.update_base_url = "TG_UI_BASE_URL" not in contents
         if self.update_base_url:
-            port_match = re.search(r"- (\d+):8501", contents)
+            port_match = re.search(rf"- (\d+):{TESTGEN_DEFAULT_PORT}", contents)
             port = port_match.group(1) if port_match else str(TESTGEN_DEFAULT_PORT)
             protocol = "https" if "SSL_CERT_FILE" in contents else "http"
             self._base_url = f"{protocol}://localhost:{port}"
 
-        if not any((self.update_version, self.update_analytics, self.update_token, self.update_base_url)):
+        self.update_api_port = bool(
+            re.search(rf"- \d+:{TESTGEN_DEFAULT_PORT}\b", contents)
+            and not re.search(rf"- \d+:{TESTGEN_DEFAULT_API_PORT}\b", contents)
+        )
+
+        if not any(
+            (
+                self.update_version,
+                self.update_analytics,
+                self.update_token,
+                self.update_base_url,
+                self.update_api_port,
+            )
+        ):
             CONSOLE.msg("No changes will be applied.")
             raise AbortAction
 
     def execute(self, action, args):
-        if not any((self.update_version, self.update_analytics, self.update_token, self.update_base_url)):
+        if not any(
+            (
+                self.update_version,
+                self.update_analytics,
+                self.update_token,
+                self.update_base_url,
+                self.update_api_port,
+            )
+        ):
             raise SkipStep
 
         contents = action.get_compose_file_path(args).read_text()
@@ -1772,6 +1794,11 @@ class UpdateComposeFileStep(Step):
             match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
             var = f"\n{match.group(1)}TG_UI_BASE_URL: {self._base_url}"
             contents = contents[0 : match.end()] + var + contents[match.end() :]
+
+        if self.update_api_port:
+            match = re.search(rf"^([ \t]+)- \d+:{TESTGEN_DEFAULT_PORT}\b.*$", contents, flags=re.M)
+            new_mapping = f"\n{match.group(1)}- {TESTGEN_DEFAULT_API_PORT}:{TESTGEN_DEFAULT_API_PORT}"
+            contents = contents[0 : match.end()] + new_mapping + contents[match.end() :]
 
         action.get_compose_file_path(args).write_text(contents)
 
@@ -1879,6 +1906,7 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
                   {ssl_volumes}      
                 ports:
                   - {args.port}:{TESTGEN_DEFAULT_PORT}
+                  - {args.api_port}:{TESTGEN_DEFAULT_API_PORT}
                 extra_hosts:
                   - host.docker.internal:host-gateway
                 depends_on:
@@ -2019,7 +2047,14 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
             dest="port",
             action="store",
             default=TESTGEN_DEFAULT_PORT,
-            help="Which port will be used to access Testgen UI. Defaults to %(default)s",
+            help="Which port will be used to access TestGen UI. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--api-port",
+            dest="api_port",
+            action="store",
+            default=TESTGEN_DEFAULT_API_PORT,
+            help="Which port will be used to access TestGen's API and MCP server. Defaults to %(default)s",
         )
         parser.add_argument(
             "--image",

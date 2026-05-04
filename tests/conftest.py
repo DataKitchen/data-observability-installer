@@ -170,6 +170,7 @@ def args_mock():
     ns.compose_project_name = "test-project"
     ns.compose_file_name = "test-compose.yml"
     ns.port = 8501
+    ns.api_port = 8530
     ns.keep_images = False
     ns.keep_config = False
     ns.skip_verify = False
