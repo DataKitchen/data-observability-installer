@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tests.installer import (
+    AbortAction,
     InstallerError,
     UV_ASSETS,
     UV_VERSION,
@@ -69,12 +70,14 @@ def test_get_uv_asset_known_platform(monkeypatch):
 
 
 @pytest.mark.unit
-def test_get_uv_asset_unknown_platform_raises(monkeypatch):
+def test_get_uv_asset_unknown_platform_raises(monkeypatch, console_msg_mock):
     monkeypatch.setattr("tests.installer.platform.system", lambda: "SunOS")
     monkeypatch.setattr("tests.installer.platform.machine", lambda: "sparc64")
 
-    with pytest.raises(InstallerError, match="No prebuilt uv binary available for platform SunOS/sparc64"):
+    with pytest.raises(AbortAction):
         get_uv_asset("tg")
+
+    console_msg_mock.assert_any_msg_contains("No prebuilt uv binary available for platform SunOS/sparc64")
 
 
 @pytest.mark.unit
@@ -236,13 +239,15 @@ def test_download_failure_retries_then_fails(uv_step, bootstrap_action, args_moc
 
 
 @pytest.mark.unit
-def test_unsupported_platform_raises(uv_step, bootstrap_action, args_mock, monkeypatch):
+def test_unsupported_platform_raises(uv_step, bootstrap_action, args_mock, monkeypatch, console_msg_mock):
     monkeypatch.setattr("tests.installer.platform.system", lambda: "SunOS")
     monkeypatch.setattr("tests.installer.platform.machine", lambda: "sparc64")
 
     with (
         patch("tests.installer.shutil.which", return_value=None),
         patch.object(bootstrap_action, "run_cmd"),
-        pytest.raises(InstallerError, match="No prebuilt uv binary available"),
+        pytest.raises(AbortAction),
     ):
         uv_step.execute(bootstrap_action, args_mock)
+
+    console_msg_mock.assert_any_msg_contains("No prebuilt uv binary available")

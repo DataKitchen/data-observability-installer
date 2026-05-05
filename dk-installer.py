@@ -1172,18 +1172,19 @@ REQ_TESTGEN_IMAGE = Requirement(
 
 
 def get_uv_asset(prod: str) -> tuple[str, str]:
-    """Return (asset_name, sha256) for the current platform, or raise InstallerError."""
+    """Return (asset_name, sha256) for the current platform, or raise AbortAction."""
     key = (platform.system(), platform.machine())
     try:
         return UV_ASSETS[key]
     except KeyError:
         supported = ", ".join(f"{s}/{m}" for s, m in UV_ASSETS)
-        raise InstallerError(
-            f"No prebuilt uv binary available for platform {key[0]}/{key[1]}. "
-            f"Supported: {supported}. "
-            f"Install uv manually (https://docs.astral.sh/uv/getting-started/installation/) and re-run, "
+        CONSOLE.msg(f"No prebuilt uv binary available for platform {key[0]}/{key[1]}.")
+        CONSOLE.msg(f"Supported: {supported}.")
+        CONSOLE.msg(
+            "Install uv manually (https://docs.astral.sh/uv/getting-started/installation/) and re-run, "
             f"or {command_hint(prod, 'install --docker', 'Install TestGen')} to use Docker."
         )
+        raise AbortAction
 
 
 def resolve_uv_path(data_folder: pathlib.Path) -> typing.Optional[str]:
@@ -2397,18 +2398,20 @@ def resolve_testgen_path(action, args) -> str:
     ctx = getattr(action, "ctx", None) or {}
     uv_path = ctx.get("uv_path") or resolve_uv_path(action.data_folder)
     if uv_path is None:
-        raise InstallerError("uv not found.")
+        CONSOLE.msg(f"uv not found. To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
+        raise AbortAction
     bin_dir = action.run_cmd(uv_path, "tool", "dir", "--bin", capture_text=True)
     if not bin_dir:
         raise InstallerError("Could not determine uv tool bin directory.")
     bin_name = "testgen.exe" if platform.system() == "Windows" else "testgen"
     testgen_path = pathlib.Path(bin_dir.strip()) / bin_name
     if not testgen_path.exists():
-        raise InstallerError(
-            f"testgen script not found at {testgen_path}. "
+        CONSOLE.msg(f"testgen script not found at {testgen_path}.")
+        CONSOLE.msg(
             f"Try {command_hint(args.prod, 'delete', 'Uninstall TestGen')}, "
             f"then {command_hint(args.prod, 'install', 'Install TestGen')}."
         )
+        raise AbortAction
     return str(testgen_path)
 
 
@@ -3102,10 +3105,6 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
             CONSOLE.msg("Observability demo configuration missing.")
             raise AbortAction
 
-        if self._resolved_mode == INSTALL_MODE_PIP and resolve_uv_path(self.data_folder) is None:
-            CONSOLE.msg(f"uv not found. To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
-            raise AbortAction
-
         if self._resolved_mode == INSTALL_MODE_DOCKER:
             tg_status = self.get_status(args)
             if not tg_status or not re.match(".*running.*", tg_status["Status"], re.I):
@@ -3184,9 +3183,6 @@ class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
             if not tg_status:
                 CONSOLE.msg("TestGen must be running for its demo data to be cleaned.")
                 raise AbortAction
-        elif resolve_uv_path(self.data_folder) is None:
-            CONSOLE.msg("uv not found. Cannot clean TestGen standalone database.")
-            raise AbortAction
 
         run_testgen_cli(self, args, "setup-system-db", "--delete-db", "--yes")
 
