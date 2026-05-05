@@ -3,7 +3,12 @@ from unittest.mock import call, patch
 
 import pytest
 
-from tests.installer import AbortAction, TestgenRunDemoAction
+from tests.installer import (
+    INSTALL_MODE_DOCKER,
+    AbortAction,
+    TestgenRunDemoAction,
+    InstallMarker,
+)
 
 
 @pytest.fixture
@@ -11,6 +16,10 @@ def tg_run_demo_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
     action = TestgenRunDemoAction()
     args_mock.prod = "tg"
     args_mock.action = "run-demo"
+    # Seed a Docker install marker so the unified action picks the Docker path.
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_DOCKER)
+    # Bypass check_requirements: pre-resolve mode so execute() runs directly.
+    action._resolved_mode = INSTALL_MODE_DOCKER
     with patch.object(action, "execute", new=partial(action.execute, args_mock)):
         yield action
 
@@ -78,7 +87,7 @@ def test_tg_run_demo_abort_not_running(tg_run_demo_action, start_cmd_mock, conso
     with pytest.raises(AbortAction):
         tg_run_demo_action.execute()
 
-    console_msg_mock.assert_any_msg_contains("Running the TestGen demo requires the platform to be running.")
+    console_msg_mock.assert_any_msg_contains("Running the TestGen demo requires the application to be running.")
 
 
 @pytest.mark.integration

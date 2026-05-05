@@ -5,6 +5,7 @@ from unittest.mock import call, patch
 import pytest
 
 from tests.installer import (
+    INSTALL_MODE_DOCKER,
     TestgenInstallAction,
     AbortAction,
     TestGenCreateDockerComposeFileStep,
@@ -17,6 +18,11 @@ def tg_install_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
     action = TestgenInstallAction()
     args_mock.prod = "tg"
     args_mock.action = "install"
+    args_mock.install_mode = INSTALL_MODE_DOCKER
+    # Bypass check_requirements: pre-resolve mode to Docker and seed the step
+    # list so execute() runs the Docker pipeline directly.
+    action._resolved_mode = INSTALL_MODE_DOCKER
+    action.steps = action.docker_steps
     with patch.object(action, "execute", new=partial(action.execute, args_mock)):
         yield action
 
@@ -41,6 +47,11 @@ def test_tg_install(tg_install_action, start_cmd_mock, stdout_mock, tmp_data_fol
 
     assert Path(tmp_data_folder).joinpath("test-compose.yml").stat().st_size > 0
     assert Path(tmp_data_folder).joinpath("dk-tg-credentials.txt").stat().st_size > 0
+    marker = Path(tmp_data_folder).joinpath("dk-tg-install.json")
+    assert marker.exists()
+    import json as _json
+
+    assert _json.loads(marker.read_text())["install_mode"] == "docker"
 
 
 @pytest.mark.integration
@@ -110,3 +121,33 @@ def test_tg_compose_base_url_ssl(tg_install_action, start_cmd_mock, stdout_mock,
     tg_install_action.execute()
     contents = compose_path.read_text()
     assert "TG_UI_BASE_URL: https://localhost:8501" in contents
+
+
+@pytest.mark.integration
+def test_tg_docker_install_auto_runs_demo(tg_install_action, start_cmd_mock, compose_path):
+    """Docker install also generates demo data so the user has something on first launch."""
+    tg_install_action.execute()
+
+    start_cmd_mock.assert_any_call(
+        "docker",
+        "compose",
+        "-f",
+        compose_path,
+        "exec",
+        "engine",
+        "testgen",
+        "quick-start",
+        raise_on_non_zero=True,
+        env=None,
+    )
+
+
+@pytest.mark.integration
+def test_tg_docker_install_no_demo_flag_skips_quick_start(tg_install_action, args_mock, start_cmd_mock):
+    """--no-demo opts out of the auto-demo step in Docker mode."""
+    args_mock.generate_demo = False
+
+    tg_install_action.execute()
+
+    for invocation in start_cmd_mock.call_args_list:
+        assert "quick-start" not in invocation.args, f"quick-start should be skipped, got: {invocation}"

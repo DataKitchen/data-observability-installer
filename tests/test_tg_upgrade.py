@@ -4,7 +4,14 @@ from unittest.mock import call
 
 import pytest
 
-from tests.installer import AbortAction, CommandFailed, TestgenUpgradeAction, TESTGEN_LATEST_TAG
+from tests.installer import (
+    INSTALL_MODE_DOCKER,
+    AbortAction,
+    CommandFailed,
+    TESTGEN_MAJOR_VERSION,
+    TestgenUpgradeAction,
+    InstallMarker,
+)
 
 
 @pytest.fixture
@@ -12,6 +19,10 @@ def tg_upgrade_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock, re
     action = TestgenUpgradeAction()
     args_mock.prod = "tg"
     args_mock.action = "upgrade"
+    # Seed a Docker install marker so the unified upgrade resolves to Docker mode.
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_DOCKER)
+    action._resolved_mode = INSTALL_MODE_DOCKER
+    action.steps = action.docker_steps
     yield action
 
 
@@ -69,7 +80,7 @@ def test_tg_upgrade_compose_missing(tg_upgrade_action, args_mock, start_cmd_mock
     start_cmd_mock.__exit__.side_effect = [None, None, CommandFailed]
 
     with pytest.raises(AbortAction, match=""):
-        tg_upgrade_action._check_requirements(args_mock)
+        tg_upgrade_action.check_requirements(args_mock)
 
     console_msg_mock.assert_any_msg_contains("TestGen's Docker configuration file is not available")
 
@@ -110,7 +121,7 @@ def test_tg_upgrade(
 
     compose_content = compose_path.read_text()
 
-    assert f"image: datakitchen/dataops-testgen:{TESTGEN_LATEST_TAG}" in compose_content
+    assert f"image: datakitchen/dataops-testgen:v{TESTGEN_MAJOR_VERSION}" in compose_content
     assert "TG_INSTANCE_ID:" in compose_content
 
 
