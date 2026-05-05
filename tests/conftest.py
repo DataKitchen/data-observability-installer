@@ -10,6 +10,13 @@ import pytest
 from tests.installer import CONSOLE, Action, TESTGEN_DEFAULT_IMAGE
 
 
+@pytest.fixture(autouse=True)
+def _no_real_browser_launch():
+    """Stop the installer from actually opening a browser tab during tests."""
+    with patch("tests.installer.webbrowser.open", return_value=False) as mock:
+        yield mock
+
+
 @pytest.fixture
 def stdout_mock():
     return Mock(return_value=[])

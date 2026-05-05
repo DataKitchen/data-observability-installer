@@ -31,6 +31,7 @@ import textwrap
 import time
 import urllib.request
 import urllib.parse
+import webbrowser
 import zipfile
 import typing
 
@@ -143,6 +144,15 @@ TESTGEN_PIP_VERSION_RE = re.compile(rf"^{re.escape(TESTGEN_PIP_PACKAGE)}\s+v(\S+
 def get_tg_url(args, port):
     protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
     return f"{protocol}://localhost:{port}"
+
+
+def open_app_in_browser(url: str) -> None:
+    """Best-effort open the URL in the user's default browser. Silent no-op
+    on headless / browser-less environments."""
+    try:
+        webbrowser.open(url)
+    except Exception:
+        LOG.exception("Failed to open browser for %s", url)
 
 
 def collect_images_digest(action, images, env=None):
@@ -1211,7 +1221,7 @@ def resolve_uv_path(data_folder: pathlib.Path) -> typing.Optional[str]:
 
 
 class UvBootstrapStep(Step):
-    label = "Setting up the Python environment"
+    label = "Preparing the Python environment"
 
     def pre_execute(self, action, args):
         # Resolve uv eagerly so later steps' pre_execute hooks can use it.
@@ -2501,7 +2511,10 @@ def start_testgen_app(action, args) -> None:
             )
 
         CONSOLE.msg(f"TestGen is running at {url}.")
-        CONSOLE.msg(f"Logs: {simplify_path(TESTGEN_LOG_FILE_PATH)}")
+        # During ``tg install`` the credentials file already lists the log path;
+        # only repeat it for ``tg start`` invocations where there's no creds file print.
+        if action.args_cmd == "start":
+            CONSOLE.msg(f"Logs: {simplify_path(TESTGEN_LOG_FILE_PATH)}")
         CONSOLE.space()
         CONSOLE.msg("Press Ctrl+C to stop the app.")
         CONSOLE.msg(f"To start it again later, {command_hint(args.prod, 'start', 'Start TestGen')}.")
@@ -2817,9 +2830,12 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         InstallMarker(self.data_folder, args.prod).write(self._resolved_mode)
         # Pip mode: keep the app running so the user has a one-command install
         # experience. Docker mode already runs as detached containers via
-        # ``docker compose up --wait``, so no need to start anything here.
+        # ``docker compose up --wait``, so no need to start anything here —
+        # but open the browser for parity with pip's Streamlit auto-launch.
         if self._resolved_mode == INSTALL_MODE_PIP:
             start_testgen_app(self, args)
+        else:
+            open_app_in_browser(get_tg_url(args, args.port))
 
 
 class TestgenStandaloneUpgradeStep(Step):
@@ -2949,11 +2965,23 @@ class TestgenStartAction(Action, ComposeActionMixin):
     def execute(self, args):
         if self._resolved_mode == INSTALL_MODE_DOCKER:
             CONSOLE.title("Start TestGen")
-            self.run_cmd("docker", "compose", "-f", self.get_compose_file_path(args), "up", "--wait")
+            compose_path = self.get_compose_file_path(args)
+            self.run_cmd("docker", "compose", "-f", compose_path, "up", "--wait")
             CONSOLE.msg("TestGen containers are running.")
             CONSOLE.msg(
                 f"For the URL and credentials, {command_hint(args.prod, 'access-info', 'Access Installed App')}."
             )
+            # Match pip-mode parity: open the browser to the configured UI URL.
+            # Best-effort — if the compose file is malformed or missing the env,
+            # we just skip the browser launch (the URL is still in the creds file).
+            try:
+                for line in compose_path.read_text().splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("TG_UI_BASE_URL:"):
+                        open_app_in_browser(stripped.split(":", 1)[1].strip())
+                        break
+            except OSError:
+                LOG.exception("Could not read TG_UI_BASE_URL from %s", compose_path)
         else:
             start_testgen_app(self, args)
 
@@ -3186,7 +3214,7 @@ class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
         except Exception:
             pass
 
-        CONSOLE.msg("Cleaning up system database..")
+        CONSOLE.msg("Cleaning up application database..")
         if self._resolved_mode == INSTALL_MODE_DOCKER:
             tg_status = self.get_status(args)
             if not tg_status:
