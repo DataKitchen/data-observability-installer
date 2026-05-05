@@ -2662,7 +2662,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
     ]
     pip_intro = [
         "Installing TestGen with pip.",
-        "The process may take 2~5 minutes depending on your system resources and network speed.",
+        "The process may take 4~8 minutes depending on your system resources and network speed.",
     ]
     docker_intro = [
         "Installing TestGen with Docker Compose.",

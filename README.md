@@ -49,15 +49,17 @@ And it allows you to <b>make fast, safe development changes</b>.
 
 TestGen can be installed two ways:
 
-- **pip** (default, recommended for evaluation) — no Docker required. The installer downloads `uv`, installs Python 3.13 if needed, and installs TestGen with an embedded Postgres database.
-- **Docker** — deploys TestGen as a Docker Compose application. Use for team eval on a shared VM, or if you already standardize on Docker.
+- **Docker** (recommended when Docker is available) — deploys TestGen as a Docker Compose application. The most stable experience for persistent use; suited for team eval on a shared VM.
+- **pip** — no Docker required. The installer downloads `uv`, installs Python 3.13 if needed, and installs TestGen in an isolated environment with an embedded Postgres database. Recommended for evaluation on machines where Docker isn't available.
+
+`tg install` with no flag prompts you to pick. If Docker isn't fully available it lists which prerequisites failed and recommends pip instead. Pass `--docker` or `--pip` to skip the prompt.
 
 Observability is always installed via Docker Compose.
 
-| Install path | Required software |
+| Install mode | Required software |
 |---|---|
-| TestGen (pip, default) | [Python](https://www.python.org/downloads/) 3.9+ (only needed to run the installer itself — TestGen will use Python 3.13 via `uv`). |
-| TestGen (Docker) + Observability | [Python](https://www.python.org/downloads/) 3.9+, [Docker](https://docs.docker.com/get-docker/) 26+, [Docker Compose](https://docs.docker.com/compose/install/) 2.38+. |
+| TestGen (pip) | [Python](https://www.python.org/downloads/) 3.9+ (only needed to run the installer itself — TestGen will use Python 3.13 via `uv`). |
+| TestGen (Docker) + Observability | [Python](https://www.python.org/downloads/) 3.9+, [Docker](https://docs.docker.com/get-docker/) 27+, [Docker Compose](https://docs.docker.com/compose/install/) 5.0+. |
 
 Check versions with `python3 --version`, `docker -v`, `docker compose version`.
 
@@ -82,27 +84,20 @@ The [Data Observability quickstart](https://docs.datakitchen.io/tutorials/quicks
 
 Before going through the quickstart, complete the prequisites above and then the following steps to install the two products and setup the demo data. For any of the commands, you can view additional options by appending `--help` at the end.
 
-### Install the TestGen application (pip, default)
-
-`tg install` defaults to a pip-based install with an embedded Postgres database and no Docker requirement. The installer downloads `uv` (if it isn't already on your PATH), uses it to install Python 3.13 (if needed) and TestGen in an isolated environment, then prints credentials plus the command to start the app.
+### Install the TestGen application
 
 ```shell
 python3 dk-installer.py tg install
 ```
 
-The process typically takes 2-5 minutes. On completion the installer writes credentials to `dk-tg-credentials.txt` and prints the `testgen run-app` command to start the UI in a separate terminal.
+With no flag, the installer probes Docker, shows which prerequisites are met, and prompts you to pick Docker or pip. Pass `--docker` or `--pip` to skip the prompt.
 
-#### Install the TestGen application (Docker)
+* **pip mode** — downloads `uv` (if not already on your PATH), uses it to install Python 3.13 (if needed) and TestGen in an isolated environment. Typically takes 4-8 minutes.
+* **Docker mode** — deploys TestGen as a Docker Compose application. Typically takes 5-10 minutes.
 
-If you prefer the Docker Compose install — for team evaluations on a shared VM, or if you already standardize on Docker — use the `--docker` flag:
+On completion, the installer writes credentials to `dk-tg-credentials.txt`, generates demo data, and opens the TestGen UI in your default browser. Use `--no-demo` to skip demo generation. `--port` sets the UI port (default 8501); `--api-port` sets the API/MCP port (default 8530); `--ssl-cert-file` / `--ssl-key-file` enable HTTPS.
 
-```shell
-python3 dk-installer.py tg install --docker
-```
-
-The Docker install takes 5-10 minutes. `--port` sets a custom localhost port (default 8501). `--ssl-cert-file` / `--ssl-key-file` enable HTTPS.
-
-Either install path can later be upgraded with `python3 dk-installer.py tg upgrade` — the installer detects which flavor is present and upgrades accordingly.
+Either install mode can later be upgraded with `python3 dk-installer.py tg upgrade` and restarted with `python3 dk-installer.py tg start` — the installer detects which flavor is present and routes accordingly.
 
 ### Install the Observability application
 
@@ -152,25 +147,19 @@ Leave this process running, and continue with the [quickstart guide](https://doc
 
 ## Useful Commands
 
-### DataOps TestGen (pip install, default)
+### DataOps TestGen (pip install)
 
-Start the app: `TG_STANDALONE_MODE=yes uv tool run testgen run-app` (reachable at `http://localhost:8501`)
+Start the app: `python3 dk-installer.py tg start` (reachable at `http://localhost:8501`, blocks until Ctrl+C)
 
-Stop the app: `Ctrl+C` in the terminal running `testgen run-app`
-
-Access the `testgen` CLI: `TG_STANDALONE_MODE=yes uv tool run testgen <command>`
+Stop the app: `Ctrl+C` in the terminal running `tg start`
 
 Upgrade the app to latest version: `python3 dk-installer.py tg upgrade`
 
 ### DataOps TestGen (Docker install)
 
-The [docker compose CLI](https://docs.docker.com/compose/reference/) can be used to operate the installed TestGen application. All commands must be run in the same folder that contains the `docker-compose.yaml` file generated by the installation.
+Start the app: `python3 dk-installer.py tg start` (or `docker compose up` from the install folder)
 
-Access the _testgen_ CLI: `docker compose exec engine bash` (use `exit` to return to the regular terminal)
-
-Stop the app: `docker compose down`
-
-Restart the app: `docker compose up`
+Stop the app: `docker compose down` from the install folder containing `docker-compose.yaml`
 
 Upgrade the app to latest version: `python3 dk-installer.py tg upgrade`
 
