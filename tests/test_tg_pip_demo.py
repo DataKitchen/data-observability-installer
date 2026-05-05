@@ -10,7 +10,7 @@ from tests.installer import (
     INSTALL_MODE_PIP,
     TestgenDeleteDemoAction,
     TestgenRunDemoAction,
-    write_install_marker,
+    InstallMarker,
 )
 
 
@@ -24,7 +24,7 @@ def pip_run_demo_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
     action = TestgenRunDemoAction()
     args_mock.prod = "tg"
     args_mock.action = "run-demo"
-    write_install_marker(action.data_folder, args_mock.prod, INSTALL_MODE_PIP)
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_PIP)
     # Bypass check_requirements: pre-resolve mode so execute() runs directly.
     action._resolved_mode = INSTALL_MODE_PIP
     with (
@@ -118,7 +118,7 @@ def test_pip_run_demo_aborts_without_uv(action_cls, args_mock, tmp_data_folder, 
     args_mock.prod = "tg"
     args_mock.action = "run-demo"
     args_mock.obs_export = False
-    write_install_marker(action.data_folder, args_mock.prod, INSTALL_MODE_PIP)
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_PIP)
     action._resolved_mode = INSTALL_MODE_PIP
 
     with (
@@ -136,7 +136,7 @@ def pip_delete_demo_action(action_cls, args_mock, tmp_data_folder, start_cmd_moc
     action = TestgenDeleteDemoAction()
     args_mock.prod = "tg"
     args_mock.action = "delete-demo"
-    write_install_marker(action.data_folder, args_mock.prod, INSTALL_MODE_PIP)
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_PIP)
     action._resolved_mode = INSTALL_MODE_PIP
     with (
         patch("tests.installer.shutil.which", return_value=UV_PATH),
@@ -185,7 +185,7 @@ def test_run_demo_aborts_without_install(run_demo_action, args_mock, console_msg
 @pytest.mark.integration
 @pytest.mark.parametrize("install_mode", [INSTALL_MODE_PIP, INSTALL_MODE_DOCKER])
 def test_run_demo_routes_by_marker(run_demo_action, args_mock, tmp_data_folder, install_mode, start_cmd_mock):
-    write_install_marker(Path(tmp_data_folder), "tg", install_mode)
+    InstallMarker(Path(tmp_data_folder), "tg").write(install_mode)
     run_demo_action._resolve_install_mode(args_mock)
 
     with (
@@ -219,7 +219,7 @@ def delete_demo_action(action_cls, args_mock, tmp_data_folder):
 @pytest.mark.integration
 @pytest.mark.parametrize("install_mode", [INSTALL_MODE_PIP, INSTALL_MODE_DOCKER])
 def test_delete_demo_routes_by_marker(delete_demo_action, args_mock, tmp_data_folder, install_mode, start_cmd_mock):
-    write_install_marker(Path(tmp_data_folder), "tg", install_mode)
+    InstallMarker(Path(tmp_data_folder), "tg").write(install_mode)
 
     delete_demo_action._resolve_install_mode(args_mock)
     with (

@@ -266,51 +266,60 @@ def command_hint(prod: str, subcmd: str, menu_label: str) -> str:
     return f"run `python3 {INSTALLER_NAME} {prod} {subcmd}`"
 
 
-def read_install_mode(data_folder: pathlib.Path, prod: str, compose_file_name: str) -> typing.Optional[str]:
-    """Return 'docker', 'pip', or None for the ``prod`` install in data_folder.
-
-    Reads the install marker file. Falls back to detecting a legacy Docker install
-    (the product's compose file + credentials) from before the marker was introduced.
+class InstallMarker:
+    """Read/write the TestGen install marker file. Falls back to detecting
+    a legacy Docker install (compose file + credentials) from before the
+    marker was introduced.
     """
-    marker_path = data_folder / INSTALL_MARKER_FILE.format(prod)
-    if marker_path.exists():
-        try:
-            data = json.loads(marker_path.read_text())
-        except Exception:
-            LOG.exception("Failed to read install marker at %s", marker_path)
-        else:
-            install_mode = data.get("install_mode")
-            if install_mode in (INSTALL_MODE_DOCKER, INSTALL_MODE_PIP):
-                return install_mode
-            LOG.warning("Install marker has unexpected install_mode: %r", install_mode)
 
-    if (data_folder / compose_file_name).exists() and (data_folder / CREDENTIALS_FILE.format(prod)).exists():
-        LOG.info("No marker present; detected legacy Docker install in %s", data_folder)
-        return INSTALL_MODE_DOCKER
+    def __init__(self, data_folder: pathlib.Path, prod: str, compose_file_name: typing.Optional[str] = None):
+        self._data_folder = data_folder
+        self._prod = prod
+        self._compose_file_name = compose_file_name
+        self.path = data_folder / INSTALL_MARKER_FILE.format(prod)
 
-    return None
+    def read(self) -> typing.Optional[str]:
+        if self.path.exists():
+            try:
+                data = json.loads(self.path.read_text())
+            except Exception:
+                LOG.exception("Failed to read install marker at %s", self.path)
+            else:
+                install_mode = data.get("install_mode")
+                if install_mode in (INSTALL_MODE_DOCKER, INSTALL_MODE_PIP):
+                    return install_mode
+                LOG.warning("Install marker has unexpected install_mode: %r", install_mode)
+        if (
+            self._compose_file_name
+            and (self._data_folder / self._compose_file_name).exists()
+            and (self._data_folder / CREDENTIALS_FILE.format(self._prod)).exists()
+        ):
+            LOG.info("No marker present; detected legacy Docker install in %s", self._data_folder)
+            return INSTALL_MODE_DOCKER
+        return None
 
+    def write(self, mode: str, **extra) -> None:
+        if mode not in (INSTALL_MODE_DOCKER, INSTALL_MODE_PIP):
+            raise ValueError(f"Unknown install_mode: {mode}")
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        created_on = now
+        if self.path.exists():
+            try:
+                existing = json.loads(self.path.read_text())
+                if isinstance(existing.get("created_on"), str):
+                    created_on = existing["created_on"]
+            except Exception:
+                LOG.exception("Failed to read existing install marker at %s", self.path)
+        self.path.write_text(
+            json.dumps(
+                {"install_mode": mode, "created_on": created_on, "last_updated_on": now, **extra},
+                indent=2,
+            )
+        )
 
-def write_install_marker(data_folder: pathlib.Path, prod: str, install_mode: str, **extra) -> None:
-    if install_mode not in (INSTALL_MODE_DOCKER, INSTALL_MODE_PIP):
-        raise ValueError(f"Unknown install_mode: {install_mode}")
-    marker_path = data_folder / INSTALL_MARKER_FILE.format(prod)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    created_on = now
-    if marker_path.exists():
-        try:
-            existing = json.loads(marker_path.read_text())
-            if isinstance(existing.get("created_on"), str):
-                created_on = existing["created_on"]
-        except Exception:
-            LOG.exception("Failed to read existing install marker at %s", marker_path)
-    data = {
-        "install_mode": install_mode,
-        "created_on": created_on,
-        "last_updated_on": now,
-        **extra,
-    }
-    marker_path.write_text(json.dumps(data, indent=2))
+    def unlink(self) -> None:
+        if self.path.exists():
+            self.path.unlink()
 
 
 @contextlib.contextmanager
@@ -2737,7 +2746,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         return []
 
     def _resolve_install_mode(self, args):
-        existing = read_install_mode(self.data_folder, args.prod, args.compose_file_name)
+        existing = InstallMarker(self.data_folder, args.prod, args.compose_file_name).read()
         if existing:
             CONSOLE.msg(f"Found an existing TestGen {existing} installation in {self.data_folder}.")
             CONSOLE.space()
@@ -2769,14 +2778,14 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         CONSOLE.msg("[d] Docker Compose (Recommended)")
         CONSOLE.msg("    The most stable TestGen experience for persistent use.")
         CONSOLE.msg("    Provides a fully managed environment with an isolated PostgreSQL container.")
-        prereq_status = "   ".join(
-            f"{'(✓)' if ok else '(X)'} {req.label or req.key}" for req, ok in prereq_results
-        )
+        prereq_status = "   ".join(f"{'(✓)' if ok else '(X)'} {req.label or req.key}" for req, ok in prereq_results)
         CONSOLE.msg(f"    Prerequisites: {prereq_status}")
         CONSOLE.space()
         CONSOLE.msg("[p] Pip + embedded PostgreSQL")
         CONSOLE.msg("    A lightweight Python installation suited for evaluation.")
-        CONSOLE.msg("    Sets up an isolated Python environment and manages the PostgreSQL database on the file system.")
+        CONSOLE.msg(
+            "    Sets up an isolated Python environment and manages the PostgreSQL database on the file system."
+        )
         CONSOLE.space()
 
         if docker_ready:
@@ -2805,7 +2814,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
     def execute(self, args):
         self.intro_text = self.pip_intro if self._resolved_mode == INSTALL_MODE_PIP else self.docker_intro
         super().execute(args)
-        write_install_marker(self.data_folder, args.prod, self._resolved_mode)
+        InstallMarker(self.data_folder, args.prod).write(self._resolved_mode)
         # Pip mode: keep the app running so the user has a one-command install
         # experience. Docker mode already runs as detached containers via
         # ``docker compose up --wait``, so no need to start anything here.
@@ -2889,7 +2898,7 @@ class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
         ]
 
     def _resolve_install_mode(self, args):
-        mode = read_install_mode(self.data_folder, args.prod, args.compose_file_name)
+        mode = InstallMarker(self.data_folder, args.prod, args.compose_file_name).read()
         if mode is None:
             CONSOLE.msg(f"No TestGen installation found in {self.data_folder}.")
             CONSOLE.msg(f"To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
@@ -2902,7 +2911,7 @@ class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
 
     def execute(self, args):
         super().execute(args)
-        write_install_marker(self.data_folder, args.prod, self._resolved_mode)
+        InstallMarker(self.data_folder, args.prod).write(self._resolved_mode)
 
 
 class TestgenStartAction(Action, ComposeActionMixin):
@@ -2928,7 +2937,7 @@ class TestgenStartAction(Action, ComposeActionMixin):
         return []
 
     def _resolve_install_mode(self, args):
-        mode = read_install_mode(self.data_folder, args.prod, args.compose_file_name)
+        mode = InstallMarker(self.data_folder, args.prod, args.compose_file_name).read()
         if mode is None:
             CONSOLE.msg(f"No TestGen installation found in {self.data_folder}.")
             CONSOLE.msg(f"To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
@@ -2992,7 +3001,7 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
     def _resolve_install_mode(self, args):
         # Unlike install/upgrade, "no install found" is not an abort here —
         # ``tg delete`` is idempotent. execute() handles the None case.
-        mode = read_install_mode(self.data_folder, args.prod, args.compose_file_name)
+        mode = InstallMarker(self.data_folder, args.prod, args.compose_file_name).read()
         self._resolved_mode = mode
         if mode is not None:
             self.analytics.additional_properties["install_mode"] = mode
@@ -3008,7 +3017,7 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
             self._delete_docker(args)
         else:
             self._delete_pip(args)
-        remove_path(self.data_folder / INSTALL_MARKER_FILE.format(args.prod))
+        InstallMarker(self.data_folder, args.prod, args.compose_file_name).unlink()
 
     def _delete_docker(self, args):
         if self.get_compose_file_path(args).exists():
@@ -3087,7 +3096,7 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
         return []
 
     def _resolve_install_mode(self, args):
-        mode = read_install_mode(self.data_folder, args.prod, args.compose_file_name)
+        mode = InstallMarker(self.data_folder, args.prod, args.compose_file_name).read()
         if mode is None:
             CONSOLE.msg(f"No TestGen installation found in {self.data_folder}.")
             CONSOLE.msg(f"To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
@@ -3159,7 +3168,7 @@ class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
 
     def _resolve_install_mode(self, args):
         # Like delete: idempotent, so "no install" returns rather than aborts.
-        mode = read_install_mode(self.data_folder, args.prod, args.compose_file_name)
+        mode = InstallMarker(self.data_folder, args.prod, args.compose_file_name).read()
         self._resolved_mode = mode
         if mode is not None:
             self.analytics.additional_properties["install_mode"] = mode

@@ -7,7 +7,7 @@ from tests.installer import (
     INSTALL_MODE_DOCKER,
     AbortAction,
     TestgenRunDemoAction,
-    write_install_marker,
+    InstallMarker,
 )
 
 
@@ -17,7 +17,7 @@ def tg_run_demo_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
     args_mock.prod = "tg"
     args_mock.action = "run-demo"
     # Seed a Docker install marker so the unified action picks the Docker path.
-    write_install_marker(action.data_folder, args_mock.prod, INSTALL_MODE_DOCKER)
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_DOCKER)
     # Bypass check_requirements: pre-resolve mode so execute() runs directly.
     action._resolved_mode = INSTALL_MODE_DOCKER
     with patch.object(action, "execute", new=partial(action.execute, args_mock)):

@@ -9,7 +9,7 @@ from tests.installer import (
     INSTALL_MODE_DOCKER,
     INSTALL_MODE_PIP,
     TestgenDeleteAction,
-    write_install_marker,
+    InstallMarker,
 )
 
 
@@ -19,7 +19,7 @@ def pip_delete_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock, tm
     action = TestgenDeleteAction()
     args_mock.prod = "tg"
     args_mock.action = "delete"
-    write_install_marker(action.data_folder, args_mock.prod, INSTALL_MODE_PIP)
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_PIP)
     # Bypass check_requirements: pre-resolve mode so execute() runs the
     # delete branch directly.
     action._resolved_mode = INSTALL_MODE_PIP
@@ -158,7 +158,7 @@ def test_delete_nothing_to_delete(delete_action, args_mock, console_msg_mock):
 
 @pytest.mark.integration
 def test_delete_routes_to_pip_and_removes_marker(delete_action, args_mock, tmp_data_folder, tmp_path):
-    write_install_marker(Path(tmp_data_folder), "tg", INSTALL_MODE_PIP)
+    InstallMarker(Path(tmp_data_folder), "tg").write(INSTALL_MODE_PIP)
     assert (Path(tmp_data_folder) / INSTALL_MARKER_FILE.format("tg")).exists()
 
     delete_action._resolve_install_mode(args_mock)

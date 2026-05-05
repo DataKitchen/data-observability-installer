@@ -10,7 +10,7 @@ from tests.installer import (
     INSTALL_MODE_DOCKER,
     INSTALL_MODE_PIP,
     TestgenUpgradeAction,
-    write_install_marker,
+    InstallMarker,
 )
 
 
@@ -20,7 +20,7 @@ def pip_upgrade_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
     action = TestgenUpgradeAction()
     args_mock.prod = "tg"
     args_mock.action = "upgrade"
-    write_install_marker(action.data_folder, args_mock.prod, INSTALL_MODE_PIP)
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_PIP)
     action._resolved_mode = INSTALL_MODE_PIP
     action.steps = action.pip_steps
     with (
@@ -137,7 +137,7 @@ def test_upgrade_aborts_with_no_install(upgrade_action, args_mock, console_msg_m
 
 @pytest.mark.integration
 def test_upgrade_resolves_to_pip_when_marker_says_pip(upgrade_action, args_mock, tmp_data_folder):
-    write_install_marker(Path(tmp_data_folder), "tg", INSTALL_MODE_PIP)
+    InstallMarker(Path(tmp_data_folder), "tg").write(INSTALL_MODE_PIP)
 
     upgrade_action._resolve_install_mode(args_mock)
 
@@ -148,7 +148,7 @@ def test_upgrade_resolves_to_pip_when_marker_says_pip(upgrade_action, args_mock,
 
 @pytest.mark.integration
 def test_upgrade_resolves_to_docker_when_marker_says_docker(upgrade_action, args_mock, tmp_data_folder):
-    write_install_marker(Path(tmp_data_folder), "tg", INSTALL_MODE_DOCKER)
+    InstallMarker(Path(tmp_data_folder), "tg").write(INSTALL_MODE_DOCKER)
 
     upgrade_action._resolve_install_mode(args_mock)
 

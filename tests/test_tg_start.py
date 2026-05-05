@@ -10,7 +10,7 @@ from tests.installer import (
     InstallerError,
     TestgenStartAction,
     start_testgen_app,
-    write_install_marker,
+    InstallMarker,
 )
 
 
@@ -154,7 +154,7 @@ def test_start_action_aborts_with_no_install(start_action, args_mock, console_ms
 def test_start_action_runs_compose_up_in_docker_mode(
     start_action, args_mock, tmp_data_folder, start_cmd_mock, compose_path
 ):
-    write_install_marker(Path(tmp_data_folder), "tg", INSTALL_MODE_DOCKER)
+    InstallMarker(Path(tmp_data_folder), "tg").write(INSTALL_MODE_DOCKER)
 
     start_action._resolve_install_mode(args_mock)
     start_action.execute(args_mock)
@@ -174,7 +174,7 @@ def test_start_action_runs_compose_up_in_docker_mode(
 
 @pytest.mark.integration
 def test_start_action_routes_to_helper_in_pip_mode(start_action, args_mock, tmp_data_folder):
-    write_install_marker(Path(tmp_data_folder), "tg", INSTALL_MODE_PIP)
+    InstallMarker(Path(tmp_data_folder), "tg").write(INSTALL_MODE_PIP)
 
     start_action._resolve_install_mode(args_mock)
     with patch("tests.installer.start_testgen_app") as start_helper:

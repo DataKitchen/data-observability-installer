@@ -12,7 +12,7 @@ from tests.installer import (
     TESTGEN_MAJOR_VERSION,
     TESTGEN_PYTHON_VERSION,
     TestgenInstallAction,
-    write_install_marker,
+    InstallMarker,
 )
 
 
@@ -300,7 +300,7 @@ def test_dispatcher_routes_to_docker_with_flag(install_action, args_mock):
 @pytest.mark.integration
 @pytest.mark.parametrize("existing", [INSTALL_MODE_DOCKER, INSTALL_MODE_PIP])
 def test_dispatcher_aborts_on_existing_install(install_action, args_mock, tmp_data_folder, existing, console_msg_mock):
-    write_install_marker(Path(tmp_data_folder), "tg", existing)
+    InstallMarker(Path(tmp_data_folder), "tg").write(existing)
 
     with pytest.raises(AbortAction):
         install_action._resolve_install_mode(args_mock)

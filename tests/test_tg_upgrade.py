@@ -10,7 +10,7 @@ from tests.installer import (
     CommandFailed,
     TESTGEN_MAJOR_VERSION,
     TestgenUpgradeAction,
-    write_install_marker,
+    InstallMarker,
 )
 
 
@@ -20,7 +20,7 @@ def tg_upgrade_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock, re
     args_mock.prod = "tg"
     args_mock.action = "upgrade"
     # Seed a Docker install marker so the unified upgrade resolves to Docker mode.
-    write_install_marker(action.data_folder, args_mock.prod, INSTALL_MODE_DOCKER)
+    InstallMarker(action.data_folder, args_mock.prod).write(INSTALL_MODE_DOCKER)
     action._resolved_mode = INSTALL_MODE_DOCKER
     action.steps = action.docker_steps
     yield action
