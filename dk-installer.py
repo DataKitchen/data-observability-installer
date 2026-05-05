@@ -459,6 +459,7 @@ class Requirement:
     key: str
     cmd: tuple[typing.Union[str, pathlib.Path], ...]
     fail_msg: tuple[str, ...]
+    label: typing.Optional[str] = None
 
     def check_availability(self, action, args, quiet=False):
         try:
@@ -1151,11 +1152,13 @@ REQ_DOCKER = Requirement(
     "DOCKER",
     ("docker", "-v"),
     ("The prerequisite Docker is not available.", "Install Docker and try again."),
+    label="Docker installed",
 )
 REQ_DOCKER_DAEMON = Requirement(
     "DOCKER_ENGINE",
     ("docker", "system", "events", "--since=0m", "--until=0m"),
     ("The Docker engine is not running.", "Start the Docker engine and try again."),
+    label="Docker engine running",
 )
 REQ_TESTGEN_IMAGE = Requirement(
     "TESTGEN_IMAGE",
@@ -1164,6 +1167,7 @@ REQ_TESTGEN_IMAGE = Requirement(
         "The Docker engine could not access TestGen's image.",
         "Make sure your networking policy allows Docker to pull the {image} image.",
     ),
+    label="TestGen image reachable",
 )
 
 
@@ -2016,17 +2020,7 @@ class UpdateComposeFileStep(Step):
             self.update_version = True
         else:
             try:
-                output = action.run_cmd(
-                    "docker",
-                    "compose",
-                    "-f",
-                    action.get_compose_file_path(args),
-                    "exec",
-                    "engine",
-                    "testgen",
-                    "--help",
-                    capture_text=True,
-                )
+                output = run_testgen_cli(action, args, "--help", capture_text=True)
                 version_match = re.search(r"TestGen\s(?:[a-zA-Z]+\s)*([0-9.]*)", output)
                 current_version = version_match.group(1)
 
@@ -2307,17 +2301,7 @@ class TestGenSetupDatabaseStep(Step):
     label = "Initializing the application database"
 
     def execute(self, action, args):
-        action.run_cmd(
-            "docker",
-            "compose",
-            "-f",
-            action.get_compose_file_path(args),
-            "exec",
-            "engine",
-            "testgen",
-            "setup-system-db",
-            "--yes",
-        )
+        run_testgen_cli(action, args, "setup-system-db", "--yes")
 
 
 class TestGenUpgradeDatabaseStep(Step):
@@ -2329,30 +2313,10 @@ class TestGenUpgradeDatabaseStep(Step):
     def execute(self, action, args):
         if action.args_cmd == "install" and action.ctx.get("using_existing"):
             raise SkipStep
-        else:
-            action.run_cmd(
-                "docker",
-                "compose",
-                "-f",
-                action.get_compose_file_path(args),
-                "exec",
-                "engine",
-                "testgen",
-                "upgrade-system-version",
-            )
+        run_testgen_cli(action, args, "upgrade-system-version")
 
     def on_action_success(self, action, args):
-        output = action.run_cmd(
-            "docker",
-            "compose",
-            "-f",
-            action.get_compose_file_path(args),
-            "exec",
-            "engine",
-            "testgen",
-            "--help",
-            capture_text=True,
-        )
+        output = run_testgen_cli(action, args, "--help", capture_text=True)
 
         match = re.search(r"TestGen\s(?:[a-zA-Z]+\s)*([0-9.]*)", output)
         CONSOLE.msg(f"Application version: {match.group(1)}")
@@ -2398,6 +2362,29 @@ def read_installed_testgen_version(action) -> typing.Optional[str]:
         if match:
             return match.group(1)
     return None
+
+
+def run_testgen_cli(action, args, *cmd_args, **run_cmd_kwargs):
+    """Run a ``testgen`` CLI subcommand in the appropriate mode based on
+    ``action._resolved_mode``: pip mode invokes the testgen script directly;
+    Docker mode runs it inside the engine container via ``docker compose exec``.
+    Extra keyword arguments are forwarded to ``action.run_cmd`` (e.g.
+    ``capture_text=True``) and the return value of ``run_cmd`` is returned.
+    """
+    if action._resolved_mode == INSTALL_MODE_PIP:
+        testgen_path = resolve_testgen_path(action, args)
+        return action.run_cmd(testgen_path, *cmd_args, **run_cmd_kwargs)
+    return action.run_cmd(
+        "docker",
+        "compose",
+        "-f",
+        action.get_compose_file_path(args),
+        "exec",
+        "engine",
+        "testgen",
+        *cmd_args,
+        **run_cmd_kwargs,
+    )
 
 
 def resolve_testgen_path(action, args) -> str:
@@ -2570,14 +2557,12 @@ class TestgenStandaloneSetupStep(Step):
     def __init__(self):
         self.username = None
         self.password = None
-        self.testgen_path = None
 
     def pre_execute(self, action, args):
         self.username = DEFAULT_USER_DATA["username"]
         self.password = generate_password()
 
     def execute(self, action, args):
-        self.testgen_path = resolve_testgen_path(action, args)
         # standalone-setup persists these env vars to ~/.testgen/config.env so
         # subsequent ``testgen run-app`` invocations pick them up automatically.
         # TESTGEN_LOG_FILE_PATH lets the App Logs dialog in the UI surface logs.
@@ -2590,8 +2575,9 @@ class TestgenStandaloneSetupStep(Step):
             env["SSL_CERT_FILE"] = args.ssl_cert_file
         if args.ssl_key_file:
             env["SSL_KEY_FILE"] = args.ssl_key_file
-        action.run_cmd(
-            self.testgen_path,
+        run_testgen_cli(
+            action,
+            args,
             "standalone-setup",
             "--username",
             self.username,
@@ -2617,18 +2603,17 @@ class TestgenStandaloneSetupStep(Step):
 
 class TestgenQuickStartStep(Step):
     """Generate demo data so the user has something to look at right after
-    install. Non-blocking — failure here logs and continues; the user can
-    run ``tg run-demo`` later if they want to retry.
+    install. Mode-agnostic — dispatches via ``run_testgen_cli``. Non-blocking:
+    failure here logs and continues; the user can run ``tg run-demo`` later.
     """
 
     label = "Generating demo data"
     required = False
 
     def execute(self, action, args):
-        if getattr(args, "no_demo", False):
+        if not getattr(args, "generate_demo", True):
             raise SkipStep
-        testgen_path = resolve_testgen_path(action, args)
-        action.run_cmd(testgen_path, "quick-start")
+        run_testgen_cli(action, args, "quick-start")
 
 
 class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
@@ -2648,6 +2633,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         ComposeStartStep,
         TestGenSetupDatabaseStep,
         TestGenUpgradeDatabaseStep,
+        TestgenQuickStartStep,
     ]
     pip_intro = [
         "Installing TestGen with pip.",
@@ -2711,12 +2697,11 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
             default=None,
             help="Path to SSL key file.",
         )
-        # Pip-only args
         parser.add_argument(
             "--no-demo",
-            dest="no_demo",
-            action="store_true",
-            help="(Pip mode only) Skip generating demo data after install.",
+            dest="generate_demo",
+            action="store_false",
+            help="Skip generating demo data after install. Default is to generate.",
         )
         # Docker-only args
         parser.add_argument(
@@ -2724,7 +2709,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
             dest="image",
             action="store",
             default=TESTGEN_DEFAULT_IMAGE,
-            help="TestGen image to use for the install. Defaults to %(default)s",
+            help="(Docker mode only) TestGen image to use for the install. Defaults to %(default)s",
         )
         parser.add_argument(
             "--pull-timeout",
@@ -2732,7 +2717,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
             action="store",
             default=TESTGEN_PULL_TIMEOUT,
             help=(
-                "Maximum amount of time in minutes that Docker will be allowed to pull the images. "
+                "(Docker mode only) Maximum amount of time in minutes that Docker will be allowed to pull the images. "
                 "Defaults to '%(default)s'"
             ),
         )
@@ -2769,55 +2754,46 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         LOG.info("tg install resolved to %s mode", mode)
 
     def _auto_select_mode(self, args):
-        # Probe with the same requirement list a real Docker install would check
-        # (including REQ_TESTGEN_IMAGE, since some networks may block docker.io image pulls).
-        if not all(req.check_availability(self, args, quiet=True) for req in self.docker_requirements):
-            CONSOLE.space()
-            CONSOLE.msg("Docker is not fully available on this machine.")
-            CONSOLE.msg("TestGen can be installed with pip instead, which uses an embedded Postgres database.")
-            CONSOLE.space()
-            try:
-                choice = input(f"{CONSOLE.MARGIN}Install TestGen with pip? [Y/n]: ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                print("")
-                raise AbortAction
-            CONSOLE.space()
-            if choice in ("", "y", "yes"):
-                return INSTALL_MODE_PIP
-            if getattr(sys, "frozen", False):
-                CONSOLE.msg("Aborted. Fix the Docker prerequisites and select 'Install TestGen' from the menu again.")
-            else:
-                CONSOLE.msg(
-                    f"Aborted. To retry with Docker, fix the prerequisites and run "
-                    f"`python3 {INSTALLER_NAME} {args.prod} install --docker`."
-                )
-                CONSOLE.msg(
-                    f"To install with pip explicitly, run `python3 {INSTALLER_NAME} {args.prod} install --pip`."
-                )
-            raise AbortAction
+        # Probe each Docker prerequisite individually so we can show per-prereq
+        # status to the user. If a prereq fails (e.g. Docker engine not running),
+        # the user can decide whether to fix it or fall back to pip.
+        prereq_results = [(req, req.check_availability(self, args, quiet=True)) for req in self.docker_requirements]
+        docker_ready = all(ok for _, ok in prereq_results)
 
         CONSOLE.space()
-        CONSOLE.msg("Two installation modes are available:")
+        CONSOLE.msg("TestGen offers two installation modes:")
         CONSOLE.space()
         CONSOLE.msg("[d] Docker Compose (Recommended)")
-        CONSOLE.msg(
-            "The most stable TestGen experience for persistent use. Provides a fully managed "
-            "environment with an isolated PostgreSQL container."
+        CONSOLE.msg("    The most stable TestGen experience for persistent use.")
+        CONSOLE.msg("    Provides a fully managed environment with an isolated PostgreSQL container.")
+        prereq_status = "   ".join(
+            f"{'(✓)' if ok else '(X)'} {req.label or req.key}" for req, ok in prereq_results
         )
+        CONSOLE.msg(f"    Prerequisites: {prereq_status}")
         CONSOLE.space()
         CONSOLE.msg("[p] Pip + embedded PostgreSQL")
-        CONSOLE.msg(
-            "A light-weight Python installation suited for evaluation. Manages the PostgreSQL "
-            "database on the file system."
-        )
+        CONSOLE.msg("    A lightweight Python installation suited for evaluation.")
+        CONSOLE.msg("    Sets up an isolated Python environment and manages the PostgreSQL database on the file system.")
         CONSOLE.space()
+
+        if docker_ready:
+            prompt = f"{CONSOLE.MARGIN}Install with Docker [d] or pip [p]? (default: d): "
+            valid_default = "d"
+        else:
+            CONSOLE.msg("To install with Docker, fix the prerequisites and run the install again.")
+            CONSOLE.space()
+            prompt = f"{CONSOLE.MARGIN}Install with pip [p]? (default: p): "
+            valid_default = "p"
+
         while True:
             try:
-                choice = input(f"{CONSOLE.MARGIN}Install with Docker [d] or pip [p]? (default: d): ").strip().lower()
+                choice = input(prompt).strip().lower()
             except (KeyboardInterrupt, EOFError):
                 print("")
                 raise AbortAction
-            if choice in ("", "d", "docker"):
+            if choice == "":
+                choice = valid_default
+            if docker_ready and choice in ("d", "docker"):
                 return INSTALL_MODE_DOCKER
             if choice in ("p", "pip"):
                 return INSTALL_MODE_PIP
@@ -2838,8 +2814,7 @@ class TestgenStandaloneUpgradeStep(Step):
     label = "Upgrading the application database"
 
     def execute(self, action, args):
-        testgen_path = resolve_testgen_path(action, args)
-        action.run_cmd(testgen_path, "upgrade-system-version")
+        run_testgen_cli(action, args, "upgrade-system-version")
 
 
 class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
@@ -2868,7 +2843,7 @@ class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
             "--skip-verify",
             dest="skip_verify",
             action="store_true",
-            help="Whether to skip the version check before upgrading.",
+            help="(Docker mode only) Whether to skip the version check before upgrading.",
         )
         parser.add_argument(
             "--pull-timeout",
@@ -2876,7 +2851,7 @@ class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
             action="store",
             default=TESTGEN_PULL_TIMEOUT,
             help=(
-                "Maximum amount of time in minutes that Docker will be allowed to pull the images. "
+                "(Docker mode only) Maximum amount of time in minutes that Docker will be allowed to pull the images. "
                 "Defaults to '%(default)s'"
             ),
         )
@@ -3127,6 +3102,10 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
             CONSOLE.msg("Observability demo configuration missing.")
             raise AbortAction
 
+        if self._resolved_mode == INSTALL_MODE_PIP and resolve_uv_path(self.data_folder) is None:
+            CONSOLE.msg(f"uv not found. To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
+            raise AbortAction
+
         if self._resolved_mode == INSTALL_MODE_DOCKER:
             tg_status = self.get_status(args)
             if not tg_status or not re.match(".*running.*", tg_status["Status"], re.I):
@@ -3136,11 +3115,9 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
         CONSOLE.msg("This process may take up to 3 minutes depending on your system resources and network speed.")
         CONSOLE.space()
 
-        if args.obs_export:
-            self.run_dk_demo_container("tg-run-demo")
-
         export_args = []
         if args.obs_export:
+            self.run_dk_demo_container("tg-run-demo")
             with open(self.data_folder / DEMO_CONFIG_FILE, "r") as file:
                 json_config = json.load(file)
             export_args = [
@@ -3150,54 +3127,19 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
                 json_config["api_key"],
             ]
 
-        if self._resolved_mode == INSTALL_MODE_DOCKER:
-            self._run_docker_demo(args, export_args)
-        else:
-            self._run_pip_demo(args, export_args)
-
-        CONSOLE.title("Demo SUCCEEDED")
-
-    def _run_docker_demo(self, args, export_args):
-        cli_commands = [["testgen", "quick-start", *export_args]]
+        run_testgen_cli(self, args, "quick-start", *export_args)
         if args.obs_export:
-            cli_commands.append(
-                [
-                    "testgen",
-                    "export-observability",
-                    "--project-key",
-                    "DEFAULT",
-                    "--test-suite-key",
-                    "default-suite-1",
-                ]
-            )
-        for command in cli_commands:
-            CONSOLE.msg(f"Running command : docker compose exec engine {' '.join(command)}")
-            self.run_cmd(
-                "docker",
-                "compose",
-                "-f",
-                self.get_compose_file_path(args),
-                "exec",
-                "engine",
-                *command,
-            )
-
-    def _run_pip_demo(self, args, export_args):
-        if resolve_uv_path(self.data_folder) is None:
-            CONSOLE.msg(f"uv not found. To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
-            raise AbortAction
-
-        testgen_path = resolve_testgen_path(self, args)
-        self.run_cmd(testgen_path, "quick-start", *export_args)
-        if args.obs_export:
-            self.run_cmd(
-                testgen_path,
+            run_testgen_cli(
+                self,
+                args,
                 "export-observability",
                 "--project-key",
                 "DEFAULT",
                 "--test-suite-key",
                 "default-suite-1",
             )
+
+        CONSOLE.title("Demo SUCCEEDED")
 
 
 class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
@@ -3242,24 +3184,11 @@ class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
             if not tg_status:
                 CONSOLE.msg("TestGen must be running for its demo data to be cleaned.")
                 raise AbortAction
-            self.run_cmd(
-                "docker",
-                "compose",
-                "-f",
-                self.get_compose_file_path(args),
-                "exec",
-                "engine",
-                "testgen",
-                "setup-system-db",
-                "--delete-db",
-                "--yes",
-            )
-        else:
-            if resolve_uv_path(self.data_folder) is None:
-                CONSOLE.msg("uv not found. Cannot clean TestGen standalone database.")
-                raise AbortAction
-            testgen_path = resolve_testgen_path(self, args)
-            self.run_cmd(testgen_path, "setup-system-db", "--delete-db", "--yes")
+        elif resolve_uv_path(self.data_folder) is None:
+            CONSOLE.msg("uv not found. Cannot clean TestGen standalone database.")
+            raise AbortAction
+
+        run_testgen_cli(self, args, "setup-system-db", "--delete-db", "--yes")
 
         CONSOLE.title("Demo data DELETED")
 

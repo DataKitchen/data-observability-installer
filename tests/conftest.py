@@ -184,7 +184,7 @@ def args_mock():
     ns.image = TESTGEN_DEFAULT_IMAGE
     ns.obs_export = False
     ns.install_mode = None
-    ns.no_demo = False
+    ns.generate_demo = True
     ns.api_port = 8530
 
     # Observability defaults

@@ -121,3 +121,33 @@ def test_tg_compose_base_url_ssl(tg_install_action, start_cmd_mock, stdout_mock,
     tg_install_action.execute()
     contents = compose_path.read_text()
     assert "TG_UI_BASE_URL: https://localhost:8501" in contents
+
+
+@pytest.mark.integration
+def test_tg_docker_install_auto_runs_demo(tg_install_action, start_cmd_mock, compose_path):
+    """Docker install also generates demo data so the user has something on first launch."""
+    tg_install_action.execute()
+
+    start_cmd_mock.assert_any_call(
+        "docker",
+        "compose",
+        "-f",
+        compose_path,
+        "exec",
+        "engine",
+        "testgen",
+        "quick-start",
+        raise_on_non_zero=True,
+        env=None,
+    )
+
+
+@pytest.mark.integration
+def test_tg_docker_install_no_demo_flag_skips_quick_start(tg_install_action, args_mock, start_cmd_mock):
+    """--no-demo opts out of the auto-demo step in Docker mode."""
+    args_mock.generate_demo = False
+
+    tg_install_action.execute()
+
+    for invocation in start_cmd_mock.call_args_list:
+        assert "quick-start" not in invocation.args, f"quick-start should be skipped, got: {invocation}"

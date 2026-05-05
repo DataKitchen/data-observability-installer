@@ -159,7 +159,7 @@ def test_tg_pip_install_auto_runs_demo(pip_install_action, start_cmd_mock):
 @pytest.mark.integration
 def test_tg_pip_install_no_demo_flag_skips_quick_start(pip_install_action, args_mock, start_cmd_mock):
     """--no-demo opts out of the auto-demo step."""
-    args_mock.no_demo = True
+    args_mock.generate_demo = False
 
     pip_install_action.execute()
 
@@ -188,11 +188,9 @@ def test_tg_pip_install_password_redacted_in_logs(pip_install_action, start_cmd_
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("user_input", ["", "y", "yes", "Y"])
-def test_auto_mode_picks_pip_when_user_confirms_pip_fallback(
-    install_action, args_mock, console_msg_mock, user_input
-):
-    """Docker probe fails → user confirms pip → resolve to pip."""
+@pytest.mark.parametrize("user_input", ["", "p", "pip", "P"])
+def test_auto_mode_picks_pip_when_docker_unavailable(install_action, args_mock, console_msg_mock, user_input):
+    """Docker probe fails → user accepts the recommended pip default (or types pip explicitly) → resolve to pip."""
     with (
         patch("tests.installer.Requirement.check_availability", return_value=False),
         patch("builtins.input", return_value=user_input),
@@ -201,28 +199,48 @@ def test_auto_mode_picks_pip_when_user_confirms_pip_fallback(
 
     assert install_action._resolved_mode == INSTALL_MODE_PIP
     assert install_action.analytics.additional_properties["install_mode"] == INSTALL_MODE_PIP
-    console_msg_mock.assert_any_msg_contains("Docker is not fully available")
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("user_input", ["n", "no", "N", "anything-else"])
-def test_auto_mode_aborts_when_user_declines_pip_fallback(install_action, args_mock, console_msg_mock, user_input):
-    """Docker probe fails → user declines pip → abort with hint."""
+def test_auto_mode_displays_prereq_status_when_docker_unavailable(install_action, args_mock, console_msg_mock):
+    """Docker probe fails → the prereq display lists each requirement with a marker and (for failures) a fix hint."""
+    # Only the first prereq passes — exercises the mixed pass/fail rendering.
+    def selective_check(req_self, *_, **__):
+        return req_self.key == "DOCKER"
+
     with (
-        patch("tests.installer.Requirement.check_availability", return_value=False),
-        patch("builtins.input", return_value=user_input),
-        pytest.raises(AbortAction),
+        patch("tests.installer.Requirement.check_availability", autospec=True, side_effect=selective_check),
+        patch("builtins.input", return_value="p"),
     ):
         install_action._resolve_install_mode(args_mock)
 
-    console_msg_mock.assert_any_msg_contains("Aborted")
-    console_msg_mock.assert_any_msg_contains("install --docker")
+    console_msg_mock.assert_any_msg_contains("two installation modes")
+    console_msg_mock.assert_any_msg_contains("Prerequisites:")
+    console_msg_mock.assert_any_msg_contains("(✓) Docker installed")
+    console_msg_mock.assert_any_msg_contains("(X) Docker engine running")
+
+
+@pytest.mark.integration
+def test_auto_mode_pip_only_prompt_when_docker_unavailable(install_action, args_mock, console_msg_mock):
+    """When Docker prereqs fail, the prompt only offers pip and tells the user how to retry with Docker."""
+    with (
+        patch("tests.installer.Requirement.check_availability", return_value=False),
+        patch("builtins.input", return_value="") as input_mock,
+    ):
+        install_action._resolve_install_mode(args_mock)
+
+    assert install_action._resolved_mode == INSTALL_MODE_PIP
+    # The prompt itself shouldn't offer [d] anymore in this branch.
+    prompt = input_mock.call_args.args[0]
+    assert "[d]" not in prompt
+    assert "[p]" in prompt
+    console_msg_mock.assert_any_msg_contains("To install with Docker, fix the prerequisites and run the install again.")
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("interrupt", [KeyboardInterrupt, EOFError])
-def test_auto_mode_pip_fallback_prompt_aborts_on_user_interrupt(install_action, args_mock, interrupt):
-    """Docker probe fails → user interrupts the pip-fallback prompt → abort."""
+def test_auto_mode_aborts_on_user_interrupt_when_docker_unavailable(install_action, args_mock, interrupt):
+    """Docker probe fails → user interrupts the prompt → abort."""
     with (
         patch("tests.installer.Requirement.check_availability", return_value=False),
         patch("builtins.input", side_effect=interrupt),

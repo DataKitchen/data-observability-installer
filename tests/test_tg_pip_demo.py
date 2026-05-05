@@ -184,23 +184,25 @@ def test_run_demo_aborts_without_install(run_demo_action, args_mock, console_msg
 
 @pytest.mark.integration
 @pytest.mark.parametrize("install_mode", [INSTALL_MODE_PIP, INSTALL_MODE_DOCKER])
-def test_run_demo_routes_by_marker(run_demo_action, args_mock, tmp_data_folder, install_mode):
+def test_run_demo_routes_by_marker(run_demo_action, args_mock, tmp_data_folder, install_mode, start_cmd_mock):
     write_install_marker(Path(tmp_data_folder), "tg", install_mode)
-
     run_demo_action._resolve_install_mode(args_mock)
+
     with (
-        patch.object(run_demo_action, "_run_pip_demo") as pip_branch,
-        patch.object(run_demo_action, "_run_docker_demo") as docker_branch,
+        patch("tests.installer.shutil.which", return_value=UV_PATH),
+        patch("tests.installer.resolve_testgen_path", return_value=TESTGEN_PATH),
         patch.object(run_demo_action, "get_status", return_value={"Status": "running(2)"}),
     ):
         run_demo_action.execute(args_mock)
 
+    # Inspect the actual quick-start invocation to confirm dispatch.
+    quick_start_calls = [c for c in start_cmd_mock.call_args_list if "quick-start" in c.args]
+    assert len(quick_start_calls) == 1
     if install_mode == INSTALL_MODE_PIP:
-        pip_branch.assert_called_once()
-        docker_branch.assert_not_called()
+        assert quick_start_calls[0].args[0] == TESTGEN_PATH
     else:
-        docker_branch.assert_called_once()
-        pip_branch.assert_not_called()
+        assert quick_start_calls[0].args[:2] == ("docker", "compose")
+        assert "exec" in quick_start_calls[0].args and "engine" in quick_start_calls[0].args
     assert run_demo_action.analytics.additional_properties["install_mode"] == install_mode
 
 
