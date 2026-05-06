@@ -20,6 +20,7 @@ import random
 import re
 import secrets
 import shutil
+import signal
 import socket
 import ssl
 import stat
@@ -2464,6 +2465,40 @@ def read_testgen_config_env() -> dict[str, str]:
     return config
 
 
+def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> None:
+    """Terminate ``proc`` and all of its descendants.
+
+    Plain ``proc.terminate()`` only kills the parent — pixeltable-pgserver
+    spawns ``postgres`` children that get orphaned otherwise. Cross-platform:
+    on Windows we shell out to ``taskkill /F /T``; on POSIX we send SIGTERM
+    to the whole process group (the parent was started with
+    ``start_new_session=True``).
+    """
+    if proc.poll() is not None:
+        return
+    if platform.system() == "Windows":
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+            )
+    else:
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if platform.system() != "Windows":
+            with contextlib.suppress(Exception):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        proc.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
+
+
 def start_testgen_app(action, args) -> None:
     """Start ``testgen run-app`` and block until the user interrupts.
 
@@ -2496,15 +2531,17 @@ def start_testgen_app(action, args) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
+            # POSIX-only: put the parent in its own process group so we can
+            # signal the whole tree (postgres included) on shutdown. Windows
+            # gets the same effect via ``taskkill /T`` in ``stop_app_tree``.
+            start_new_session=(platform.system() != "Windows"),
         )
     except FileNotFoundError as e:
         raise InstallerError(f"Could not start TestGen: {e}") from e
 
     try:
         if not wait_for_tcp_port(port, timeout=TESTGEN_APP_READY_TIMEOUT):
-            proc.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=5)
+            stop_app_tree(proc, timeout=5)
             raise InstallerError(
                 f"TestGen did not start within {TESTGEN_APP_READY_TIMEOUT} seconds. "
                 f"See {simplify_path(TESTGEN_LOG_FILE_PATH)} for details."
@@ -2526,19 +2563,11 @@ def start_testgen_app(action, args) -> None:
             # Reset the cursor to column 0 — the terminal echoed `^C` mid-line.
             print("")
             CONSOLE.msg("Stopping TestGen...")
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+            stop_app_tree(proc, timeout=10)
             CONSOLE.msg("TestGen stopped.")
             CONSOLE.msg(f"To start it again, {command_hint(args.prod, 'start', 'Start TestGen')}.")
     finally:
-        if proc.poll() is None:
-            proc.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=5)
+        stop_app_tree(proc, timeout=5)
 
 
 class UvToolUpgradeStep(Step):
