@@ -204,9 +204,9 @@ def test_auto_mode_picks_pip_when_docker_unavailable(install_action, args_mock, 
 @pytest.mark.integration
 def test_auto_mode_displays_prereq_status_when_docker_unavailable(install_action, args_mock, console_msg_mock):
     """Docker probe fails → the prereq display lists each requirement with a marker and (for failures) a fix hint."""
-    # Only the first prereq passes — exercises the mixed pass/fail rendering.
+    # Only the Compose plugin probe passes — exercises the mixed pass/fail rendering.
     def selective_check(req_self, *_, **__):
-        return req_self.key == "DOCKER"
+        return req_self.key == "DOCKER_COMPOSE"
 
     with (
         patch("tests.installer.Requirement.check_availability", autospec=True, side_effect=selective_check),
@@ -216,8 +216,12 @@ def test_auto_mode_displays_prereq_status_when_docker_unavailable(install_action
 
     console_msg_mock.assert_any_msg_contains("two installation modes")
     console_msg_mock.assert_any_msg_contains("Prerequisites:")
-    console_msg_mock.assert_any_msg_contains("(✓) Docker installed")
+    console_msg_mock.assert_any_msg_contains("(✓) Docker Compose installed")
     console_msg_mock.assert_any_msg_contains("(X) Docker engine running")
+    # REQ_DOCKER is checked but not displayed — REQ_DOCKER_COMPOSE failure
+    # implies the same fix, so the picker hides it to keep the line short.
+    rendered = " ".join(call.args[0] for call in console_msg_mock.call_args_list if call.args)
+    assert "Docker installed" not in rendered
 
 
 @pytest.mark.integration

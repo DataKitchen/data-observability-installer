@@ -1180,6 +1180,15 @@ REQ_DOCKER_DAEMON = Requirement(
     ("The Docker engine is not running.", "Start the Docker engine and try again."),
     label="Docker engine running",
 )
+REQ_DOCKER_COMPOSE = Requirement(
+    "DOCKER_COMPOSE",
+    ("docker", "compose", "version"),
+    (
+        "The Docker Compose plugin is not available.",
+        "Install the Docker Compose plugin and try again.",
+    ),
+    label="Docker Compose installed",
+)
 REQ_TESTGEN_IMAGE = Requirement(
     "TESTGEN_IMAGE",
     ("docker", "manifest", "inspect", "{image}"),
@@ -1413,7 +1422,7 @@ class ComposeActionMixin:
 
 class ComposeDeleteAction(Action, ComposeActionMixin):
     args_cmd = "delete"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE]
 
     def execute(self, args):
         if self.get_compose_file_path(args).exists():
@@ -1676,7 +1685,7 @@ class ObsUpgradeAction(MultiStepAction, ComposeActionMixin):
     label = "Upgrade"
     title = "Upgrade Observability"
     args_cmd = "upgrade"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE]
 
     steps = [
         ObsFetchCurrentVersionStep,
@@ -1919,7 +1928,7 @@ class ObsInstallAction(AnalyticsMultiStepAction, ComposeActionMixin):
     intro_text = ["This process may take 5~15 minutes depending on your system resources and network speed."]
 
     args_cmd = "install"
-    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON]
+    requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE]
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
@@ -2697,7 +2706,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         "Installing TestGen with Docker Compose.",
         "This process may take 5~10 minutes depending on your system resources and network speed.",
     ]
-    docker_requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_TESTGEN_IMAGE]
+    docker_requirements = [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE, REQ_TESTGEN_IMAGE]
 
     args_cmd = "install"
     label = "Installation"
@@ -2820,7 +2829,12 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         CONSOLE.msg("[d] Docker Compose (Recommended)")
         CONSOLE.msg("    The most stable TestGen experience for persistent use.")
         CONSOLE.msg("    Provides a fully managed environment with an isolated PostgreSQL container.")
-        prereq_status = "   ".join(f"{'(✓)' if ok else '(X)'} {req.label or req.key}" for req, ok in prereq_results)
+        # Hide REQ_DOCKER from the picker — REQ_DOCKER_COMPOSE failure implies
+        # the same fix, so showing both bloats the prereq line. The actual
+        # check below (and the per-prereq fail messages later) still uses all four.
+        prereq_status = "   ".join(
+            f"{'(✓)' if ok else '(X)'} {req.label or req.key}" for req, ok in prereq_results if req is not REQ_DOCKER
+        )
         CONSOLE.msg(f"    Prerequisites: {prereq_status}")
         CONSOLE.space()
         CONSOLE.msg("[p] Pip + embedded PostgreSQL")
@@ -2925,6 +2939,7 @@ class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
         return [
             REQ_DOCKER,
             REQ_DOCKER_DAEMON,
+            REQ_DOCKER_COMPOSE,
             Requirement(
                 "TG_COMPOSE_FILE",
                 (
@@ -2978,7 +2993,7 @@ class TestgenStartAction(Action, ComposeActionMixin):
 
     def get_requirements(self, args):
         if self._resolved_mode == INSTALL_MODE_DOCKER:
-            return [REQ_DOCKER, REQ_DOCKER_DAEMON]
+            return [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE]
         return []
 
     def _resolve_install_mode(self, args):
@@ -3052,7 +3067,7 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
 
     def get_requirements(self, args):
         if self._resolved_mode == INSTALL_MODE_DOCKER:
-            return [REQ_DOCKER, REQ_DOCKER_DAEMON]
+            return [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE]
         return []
 
     def _resolve_install_mode(self, args):
@@ -3145,10 +3160,14 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
         super().check_requirements(args)
 
     def get_requirements(self, args):
-        # Docker mode requires Docker. For pip mode, Docker is only needed when
-        # the user asked to export to Observability (the dk-demo container
-        # generates the export payload).
-        if self._resolved_mode == INSTALL_MODE_DOCKER or getattr(args, "obs_export", False):
+        # Docker mode requires Docker + Compose (we shell into the engine
+        # container via ``docker compose exec``). For pip mode, Docker is only
+        # needed when the user asked to export to Observability — the dk-demo
+        # container that generates the export payload runs via ``docker run``,
+        # so Compose isn't required there.
+        if self._resolved_mode == INSTALL_MODE_DOCKER:
+            return [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE]
+        if getattr(args, "obs_export", False):
             return [REQ_DOCKER, REQ_DOCKER_DAEMON]
         return []
 
@@ -3219,9 +3238,13 @@ class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
         super().check_requirements(args)
 
     def get_requirements(self, args):
-        # Docker mode requires Docker. For pip mode, the dk-demo container
-        # call below is wrapped in try/except so Docker absence is non-fatal.
-        return [REQ_DOCKER, REQ_DOCKER_DAEMON] if self._resolved_mode == INSTALL_MODE_DOCKER else []
+        # Docker mode requires Docker + Compose (we shell into the engine
+        # container via ``docker compose exec``). For pip mode, the dk-demo
+        # container call below is wrapped in try/except so Docker absence is
+        # non-fatal.
+        if self._resolved_mode == INSTALL_MODE_DOCKER:
+            return [REQ_DOCKER, REQ_DOCKER_DAEMON, REQ_DOCKER_COMPOSE]
+        return []
 
     def _resolve_install_mode(self, args):
         # Like delete: idempotent, so "no install" returns rather than aborts.
