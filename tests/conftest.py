@@ -17,6 +17,22 @@ def _no_real_browser_launch():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def _no_real_process_group_signals():
+    """Belt-and-suspenders: stop ``stop_app_tree`` from accidentally signalling
+    a real process group when a Popen-mocked test exercises it. ``MagicMock``'s
+    auto ``__index__`` returns 1, so ``os.getpgid(mock_proc.pid)`` resolves to
+    pgid 1 (init) and ``os.killpg(1, SIGTERM)`` from a root container actually
+    signals init → CI runner shutdown. Tests that need to assert on these
+    explicitly override the patches inside their own ``with patch(...)``.
+    """
+    with (
+        patch("tests.installer.os.killpg") as killpg_mock,
+        patch("tests.installer.os.getpgid", return_value=99999),
+    ):
+        yield killpg_mock
+
+
 @pytest.fixture
 def stdout_mock():
     return Mock(return_value=[])
