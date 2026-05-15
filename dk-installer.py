@@ -684,6 +684,10 @@ class Action:
                         "class": "logging.FileHandler",
                         "filename": str(file_path),
                         "formatter": "file",
+                        # Default is locale.getpreferredencoding(), which is
+                        # cp1252 on US Windows — chokes on non-ASCII chars like
+                        # ✓ that the installer prints in prereq status lines.
+                        "encoding": "utf-8",
                     },
                     "console": {
                         "level": "DEBUG",
@@ -2508,6 +2512,71 @@ def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> None:
             proc.wait(timeout=5)
 
 
+def stop_standalone_orphans() -> None:
+    """Best-effort kill of orphan ``testgen`` + embedded ``postgres`` processes
+    left over from a previous dirty exit.
+
+    Called before steps that need a clean slate (``tg delete`` and the
+    standalone-setup step of ``tg install``). Silent on the happy path —
+    only logs when something is actually killed.
+
+    Postgres is targeted by PID via ``<pgdata>/postmaster.pid`` so a user's
+    other Postgres installs aren't touched. ``testgen.exe`` is targeted by
+    image name on Windows — the installer itself is ``dk-installer.exe``,
+    so there's no risk of self-kill. Killing ``testgen.exe`` before
+    ``uv tool uninstall`` also matters on Windows: a running .exe holds an
+    exclusive file lock, so ``uv`` would otherwise fail to delete the binary.
+    """
+    # Outer guard so a transient filesystem/permission glitch in this best-effort
+    # cleanup can never crash the install or delete flow.
+    try:
+        tg_home_env = os.environ.get("TG_TESTGEN_HOME")
+        tg_home = pathlib.Path(tg_home_env) if tg_home_env else pathlib.Path.home() / ".testgen"
+        pid_file = tg_home / "pgdata" / "postmaster.pid"
+        is_windows = platform.system() == "Windows"
+
+        if pid_file.exists():
+            with contextlib.suppress(Exception):
+                postgres_pid = int(pid_file.read_text().splitlines()[0].strip())
+                LOG.info("Stopping orphan postgres (PID %d) from previous session", postgres_pid)
+                if is_windows:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(postgres_pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        check=False,
+                    )
+                else:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(postgres_pid, signal.SIGKILL)
+
+        if is_windows:
+            # Image-name match — covers any leftover `testgen run-app` parents.
+            # `/T` propagates to their children (UI/scheduler/server subprocesses).
+            with contextlib.suppress(Exception):
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/IM", "testgen.exe"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    check=False,
+                )
+        else:
+            # `pkill -f` matches against the full command line. The installer's own
+            # argv is `python dk-installer.py …` — doesn't contain `run-app`, so
+            # no self-kill risk.
+            with contextlib.suppress(Exception):
+                subprocess.run(
+                    ["pkill", "-9", "-f", r"testgen.*run-app"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+    except Exception:
+        LOG.exception("Unexpected error during orphan cleanup; continuing")
+
+
 def start_testgen_app(action, args) -> None:
     """Start ``testgen run-app`` and block until the user interrupts.
 
@@ -2624,6 +2693,10 @@ class TestgenStandaloneSetupStep(Step):
     def pre_execute(self, action, args):
         self.username = DEFAULT_USER_DATA["username"]
         self.password = generate_password()
+        # Reach here only after `_resolve_install_mode` confirmed no existing
+        # install marker — so any running testgen/postgres processes are
+        # orphans from a previous dirty exit, safe to force-kill.
+        stop_standalone_orphans()
 
     def execute(self, action, args):
         # standalone-setup persists these env vars to ~/.testgen/config.env so
@@ -3101,6 +3174,13 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
 
     def _delete_pip(self, args):
         CONSOLE.title("Delete TestGen instance")
+
+        # Stop any running testgen + embedded postgres before touching the
+        # installation. On Windows, a live testgen.exe locks its own binary
+        # so `uv tool uninstall` would fail to remove it; on either platform,
+        # a live postgres holds file handles into ~/.testgen that block
+        # `shutil.rmtree` from completing cleanly.
+        stop_standalone_orphans()
 
         uv_path = resolve_uv_path(self.data_folder)
         if uv_path:
