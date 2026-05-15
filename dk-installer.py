@@ -684,6 +684,10 @@ class Action:
                         "class": "logging.FileHandler",
                         "filename": str(file_path),
                         "formatter": "file",
+                        # Default is locale.getpreferredencoding(), which is
+                        # cp1252 on US Windows — chokes on non-ASCII chars like
+                        # ✓ that the installer prints in prereq status lines.
+                        "encoding": "utf-8",
                     },
                     "console": {
                         "level": "DEBUG",
