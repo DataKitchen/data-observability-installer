@@ -1737,9 +1737,10 @@ class ObsDataInitializationStep(Step):
 
     def on_action_success(self, action, args):
         cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
+        protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
         with CONSOLE.tee(cred_file_path) as console_tee:
             for service, url_tpl in OBS_SERVICES_URLS:
-                console_tee(f"{service:>20}: {url_tpl.format('http://localhost', args.port)}")
+                console_tee(f"{service:>20}: {url_tpl.format(f'{protocol}://localhost', args.port)}")
             console_tee("")
             console_tee(f"Username: {self._user_data['username']}")
             console_tee(f"Password: {self._user_data['password']}", skip_logging=True)
@@ -1769,6 +1770,12 @@ class ObsGenerateDemoConfigStep(Step):
 
 
 class ObsCreateComposeFileStep(CreateComposeFileStepBase):
+    def pre_execute(self, action, args):
+        super().pre_execute(action, args)
+        if bool(args.ssl_cert_file) != bool(args.ssl_key_file):
+            CONSOLE.msg("Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.")
+            raise AbortAction
+
     def get_compose_file_contents(self, action, args):
         action.analytics.additional_properties["used_custom_image"] = any(
             (
@@ -1776,6 +1783,7 @@ class ObsCreateComposeFileStep(CreateComposeFileStepBase):
                 args.be_image != OBS_DEF_BE_IMAGE,
             )
         )
+        action.analytics.additional_properties["used_custom_cert"] = bool(args.ssl_cert_file and args.ssl_key_file)
         compose_file_content = textwrap.dedent(
             """
             name: ${DK_OBSERVABILITY_COMPOSE_NAME:-}
@@ -1880,12 +1888,14 @@ class ObsCreateComposeFileStep(CreateComposeFileStepBase):
                     condition: service_healthy
                 environment:
                   OBSERVABILITY_AUTH_METHOD: ${DK_OBSERVABILITY_AUTH_METHOD:-basic}
+                  __SSL_UI_ENVIRONMENT__
                 links:
                   - "observability_backend:observability-api"
                   - "observability_backend:event-api"
                   - "observability_backend:agent-api"
                 ports:
                   - "${DK_OBSERVABILITY_HTTP_PORT:-8082}:8082"
+                __SSL_UI_VOLUMES__
 
             networks:
               datakitchen:
@@ -1912,6 +1922,28 @@ class ObsCreateComposeFileStep(CreateComposeFileStepBase):
             lambda m: f"${{{m.group(1)}:-{defaults.get(m.group(1), m.group(2))}}}",
             compose_file_content,
         )
+
+        # Fill (or strip) the UI TLS placeholders. When a cert+key are provided,
+        # they are bind-mounted into the UI container and SSL_CERT_FILE/SSL_KEY_FILE
+        # are set so its nginx serves HTTPS; otherwise the UI stays on plain HTTP.
+        if args.ssl_cert_file and args.ssl_key_file:
+            compose_file_content = compose_file_content.replace(
+                "      __SSL_UI_ENVIRONMENT__",
+                "      SSL_CERT_FILE: /dk/ssl/cert.crt\n      SSL_KEY_FILE: /dk/ssl/cert.key",
+            )
+            compose_file_content = compose_file_content.replace(
+                "    __SSL_UI_VOLUMES__",
+                "    volumes:\n"
+                f"      - type: bind\n"
+                f"        source: {args.ssl_cert_file}\n"
+                f"        target: /dk/ssl/cert.crt\n"
+                f"      - type: bind\n"
+                f"        source: {args.ssl_key_file}\n"
+                f"        target: /dk/ssl/cert.key",
+            )
+        else:
+            compose_file_content = compose_file_content.replace("      __SSL_UI_ENVIRONMENT__\n", "")
+            compose_file_content = compose_file_content.replace("    __SSL_UI_VOLUMES__\n", "")
 
         return compose_file_content
 
@@ -1966,6 +1998,20 @@ class ObsInstallAction(AnalyticsMultiStepAction, ComposeActionMixin):
             action="store",
             default=OBS_DEF_UI_IMAGE,
             help="Observability UI image to use for the install. Defaults to %(default)s",
+        )
+        parser.add_argument(
+            "--ssl-cert-file",
+            dest="ssl_cert_file",
+            action="store",
+            default=None,
+            help="Path to SSL certificate file. When provided together with --ssl-key-file, the UI serves HTTPS.",
+        )
+        parser.add_argument(
+            "--ssl-key-file",
+            dest="ssl_key_file",
+            action="store",
+            default=None,
+            help="Path to SSL key file. When provided together with --ssl-cert-file, the UI serves HTTPS.",
         )
 
 
@@ -2219,7 +2265,7 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
         return username, password
 
     def get_compose_file_contents(self, action, args):
-        action.analytics.additional_properties["used_custom_cert"] = args.ssl_cert_file and args.ssl_key_file
+        action.analytics.additional_properties["used_custom_cert"] = bool(args.ssl_cert_file and args.ssl_key_file)
         action.analytics.additional_properties["used_custom_image"] = args.image != TESTGEN_DEFAULT_IMAGE
 
         ssl_variables = (
