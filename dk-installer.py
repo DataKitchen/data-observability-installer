@@ -480,22 +480,27 @@ class Requirement:
     cmd: tuple[typing.Union[str, pathlib.Path], ...]
     fail_msg: tuple[str, ...]
     label: typing.Optional[str] = None
+    #: Second way of satisfying the same requirement, tried when ``cmd`` fails.
+    alt_cmd: typing.Optional[tuple[typing.Union[str, pathlib.Path], ...]] = None
 
     def check_availability(self, action, args, quiet=False):
-        try:
-            action.run_cmd_retries(
-                *(seg.format(**args.__dict__) for seg in self.cmd),
-                timeout=REQ_CHECK_TIMEOUT,
-                retries=1,
-            )
-        except CommandFailed:
-            if not quiet:
-                CONSOLE.space()
-                for line in self.fail_msg:
-                    CONSOLE.msg(line.format(**args.__dict__))
-            return False
-        else:
-            return True
+        for cmd in (c for c in (self.cmd, self.alt_cmd) if c is not None):
+            try:
+                action.run_cmd_retries(
+                    *(seg.format(**args.__dict__) for seg in cmd),
+                    timeout=REQ_CHECK_TIMEOUT,
+                    retries=1,
+                )
+            except CommandFailed:
+                continue
+            else:
+                return True
+
+        if not quiet:
+            CONSOLE.space()
+            for line in self.fail_msg:
+                CONSOLE.msg(line.format(**args.__dict__))
+        return False
 
 
 class CommandFailed(Exception):
@@ -1195,12 +1200,18 @@ REQ_DOCKER_COMPOSE = Requirement(
 )
 REQ_TESTGEN_IMAGE = Requirement(
     "TESTGEN_IMAGE",
-    ("docker", "manifest", "inspect", "{image}"),
+    # An image already in the local engine needs no pull, so it satisfies this outright --
+    # `docker manifest inspect` alone would reject a locally built one. Checked first because
+    # it is instant, and because it lets an install proceed from cache when the registry is
+    # unreachable. A name that is neither local nor in a registry still fails, which is the
+    # signal this requirement exists to give.
+    ("docker", "image", "inspect", "{image}"),
     (
         "The Docker engine could not access TestGen's image.",
         "Make sure your networking policy allows Docker to pull the {image} image.",
     ),
     label="TestGen image reachable",
+    alt_cmd=("docker", "manifest", "inspect", "{image}"),
 )
 
 
