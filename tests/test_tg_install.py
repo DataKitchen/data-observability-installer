@@ -10,6 +10,7 @@ from tests.installer import (
     AbortAction,
     TestGenCreateDockerComposeFileStep,
     ComposeVerifyExistingInstallStep,
+    TESTGEN_STOP_GRACE_PERIOD,
 )
 
 
@@ -112,6 +113,24 @@ def test_tg_compose_base_url_custom_port(tg_install_action, start_cmd_mock, stdo
     tg_install_action.execute()
     contents = compose_path.read_text()
     assert "TG_UI_BASE_URL: http://localhost:9000" in contents
+
+
+@pytest.mark.integration
+def test_tg_compose_sets_engine_stop_grace_period(tg_install_action, start_cmd_mock, stdout_mock, compose_path):
+    """Docker's 10s default kills the scheduler mid-shutdown, cutting a running job
+    instead of letting it stop at a checkpoint."""
+    tg_install_action.execute()
+    compose_content = compose_path.read_text()
+
+    # Only the engine needs it — postgres shuts down on its own quickly.
+    assert compose_content.count("stop_grace_period") == 1
+    lines = compose_content.splitlines()
+    image_idx = next(i for i, line in enumerate(lines) if "image: datakitchen/dataops-testgen" in line)
+    grace_idx = next(i for i, line in enumerate(lines) if "stop_grace_period" in line)
+    # Inside the engine service, right under its image: two comment lines, then the key.
+    assert grace_idx == image_idx + 3
+    indent = lines[image_idx][: -len(lines[image_idx].lstrip())]
+    assert lines[grace_idx] == f"{indent}stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s"
 
 
 @pytest.mark.integration

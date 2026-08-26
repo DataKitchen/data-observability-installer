@@ -33,6 +33,17 @@ def _no_real_process_group_signals():
         yield killpg_mock
 
 
+@pytest.fixture(autouse=True)
+def _no_real_orphan_sweep():
+    """``force_kill_app_tree`` finishes with ``stop_standalone_orphans``, which shells out
+    to a real ``pkill -9 -f 'testgen.*run-app'``. Unpatched, a test exercising the
+    force-kill path would kill the developer's own running TestGen. Tests that assert on
+    the sweep override this inside their own ``with patch(...)``.
+    """
+    with patch("tests.installer.stop_standalone_orphans") as mock:
+        yield mock
+
+
 @pytest.fixture
 def stdout_mock():
     return Mock(return_value=[])

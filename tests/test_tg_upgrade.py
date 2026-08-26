@@ -9,7 +9,9 @@ from tests.installer import (
     AbortAction,
     CommandFailed,
     TESTGEN_MAJOR_VERSION,
+    TESTGEN_STOP_GRACE_PERIOD,
     TestgenUpgradeAction,
+    find_in_block,
     InstallMarker,
 )
 
@@ -45,7 +47,12 @@ def tg_upgrade_stdout_side_effect(stdout_mock):
     yield side_effect
 
 
-def get_compose_content(*extra_vars):
+def get_compose_content(*extra_vars, stop_grace=False):
+    """A compose file as an older installer would have written it.
+
+    ``stop_grace`` opts into the engine grace period, i.e. a file already current
+    in that respect — leave it off to model the installs the upgrade has to patch.
+    """
     template = textwrap.dedent("""
         name: testgen
 
@@ -63,10 +70,11 @@ def get_compose_content(*extra_vars):
         services:
           engine:
             image: datakitchen/dataops-testgen:v2.14.5
-
+        {}
     """)
 
-    return template.format(textwrap.indent("\n".join(extra_vars), "  "))
+    grace = f"    stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s\n" if stop_grace else ""
+    return template.format(textwrap.indent("\n".join(extra_vars), "  "), grace)
 
 
 def set_version_check_mock(version_check_mock, latest_version):
@@ -137,7 +145,7 @@ def test_tg_upgrade_abort(
     args_mock.skip_verify = False
     set_version_check_mock(version_check_mock, "1.0.0")
     initial_compose_content = get_compose_content(
-        "TG_INSTANCE_ID: test-instance-id", "TG_UI_BASE_URL: http://localhost:8501"
+        "TG_INSTANCE_ID: test-instance-id", "TG_UI_BASE_URL: http://localhost:8501", stop_grace=True
     )
     compose_path.write_text(initial_compose_content)
 
@@ -239,3 +247,158 @@ def test_tg_upgrade_preserves_existing_base_url(
     compose_content = compose_path.read_text()
     assert "TG_UI_BASE_URL: https://custom.example.com" in compose_content
     assert compose_content.count("TG_UI_BASE_URL") == 1
+
+
+@pytest.mark.integration
+def test_tg_upgrade_adds_stop_grace_period(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """Existing installs keep their compose file forever — the upgrade is the only
+    chance to give them the grace period a running job needs to checkpoint."""
+    set_version_check_mock(version_check_mock, "1.0.0")
+    compose_path.write_text(get_compose_content("TG_INSTANCE_ID: test-instance-id"))
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    lines = compose_content.splitlines()
+    image_idx = next(i for i, line in enumerate(lines) if "image: datakitchen/dataops-testgen" in line)
+    grace_idx = next(i for i, line in enumerate(lines) if "stop_grace_period" in line)
+    # Inside the engine service, right under its image: two comment lines, then the key.
+    assert grace_idx == image_idx + 3
+    indent = lines[image_idx][: -len(lines[image_idx].lstrip())]
+    assert lines[grace_idx] == f"{indent}stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s"
+
+
+@pytest.mark.integration
+def test_tg_upgrade_preserves_existing_stop_grace_period(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """A user who tuned the value keeps it, and repeated upgrades don't stack duplicates."""
+    args_mock.skip_verify = True
+    set_version_check_mock(version_check_mock, "1.1.0")
+    compose_path.write_text(
+        get_compose_content("TG_INSTANCE_ID: test-instance-id").replace(
+            "image: datakitchen/dataops-testgen:v2.14.5",
+            "image: datakitchen/dataops-testgen:v2.14.5\n    stop_grace_period: 300s",
+        )
+    )
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "stop_grace_period: 300s" in compose_content
+    assert compose_content.count("stop_grace_period") == 1
+
+
+@pytest.mark.integration
+def test_tg_upgrade_adds_stop_grace_period_to_custom_image(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """``tg install --image`` accepts a private mirror, so the anchor can't assume the
+    image is a datakitchen one — those installs need the grace period just as much."""
+    args_mock.skip_verify = True
+    set_version_check_mock(version_check_mock, "1.1.0")
+    compose_path.write_text(
+        get_compose_content("TG_INSTANCE_ID: test-instance-id").replace(
+            "datakitchen/dataops-testgen:v2.14.5", "registry.internal.example.com/mirror/testgen:v2.14.5"
+        )
+    )
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    lines = compose_content.splitlines()
+    image_idx = next(i for i, line in enumerate(lines) if "image:" in line)
+    grace_idx = next(i for i, line in enumerate(lines) if "stop_grace_period" in line)
+    assert grace_idx == image_idx + 3
+    assert lines[grace_idx].strip() == f"stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s"
+
+
+@pytest.mark.integration
+def test_tg_upgrade_ignores_stop_grace_period_on_another_service(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """A grace period set on postgres says nothing about the service that runs the
+    scheduler — the engine must still get its own."""
+    args_mock.skip_verify = True
+    set_version_check_mock(version_check_mock, "1.1.0")
+    compose_path.write_text(
+        # The stray comment matters too: a mention anywhere else in the file must not make
+        # the engine look already-patched.
+        "# note: stop_grace_period is managed by the installer\n"
+        + get_compose_content("TG_INSTANCE_ID: test-instance-id")
+        + "\n  postgres:\n    image: postgres:14.1-alpine\n    stop_grace_period: 30s\n"
+    )
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    engine_block, _, postgres_block = compose_content.partition("  postgres:")
+    assert f"stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s" in engine_block
+    # The user's postgres value is left exactly as they set it.
+    assert "stop_grace_period: 30s" in postgres_block
+    # engine's, postgres', and the stray comment.
+    assert compose_content.count("stop_grace_period") == 3
+
+
+COMPOSE_TWO_SERVICES = """name: testgen
+# a stray mention of stop_grace_period above the services section
+services:
+  engine:
+    image: datakitchen/dataops-testgen:v5
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:14.1-alpine
+    stop_grace_period: 30s
+"""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "block, key, expected",
+    (
+        ("engine", "image", "image: datakitchen/dataops-testgen:v5"),
+        ("postgres", "image", "image: postgres:14.1-alpine"),
+        ("postgres", "stop_grace_period", "stop_grace_period: 30s"),
+        # Scoping is the whole point: postgres' grace period is not the engine's, and a
+        # mention in a comment above `services:` is not a setting on any service.
+        ("engine", "stop_grace_period", None),
+        ("engine", "nonexistent", None),
+        ("nonexistent", "image", None),
+    ),
+)
+def test_find_in_block_is_scoped_to_the_block(block, key, expected):
+    match = find_in_block(COMPOSE_TWO_SERVICES, block, key)
+    assert (match.group(0).strip() if match else None) == expected
+
+
+@pytest.mark.unit
+def test_find_in_block_offsets_are_absolute():
+    """Callers splice around the match, so its offsets must index the whole file."""
+    match = find_in_block(COMPOSE_TWO_SERVICES, "postgres", "image")
+    assert COMPOSE_TWO_SERVICES[match.start() : match.end()] == "    image: postgres:14.1-alpine"
+    assert match.group(1) == "    "
