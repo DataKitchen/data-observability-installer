@@ -1,3 +1,4 @@
+import signal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,7 +12,9 @@ from tests.installer import (
     TestgenStartAction,
     start_testgen_app,
     stop_app_tree,
+    force_kill_app_tree,
     InstallMarker,
+    TESTGEN_STOP_GRACE_PERIOD,
 )
 
 
@@ -117,16 +120,64 @@ def test_start_testgen_app_handles_keyboard_interrupt(app_action, args_mock, con
         patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
         patch("tests.installer.subprocess.Popen", return_value=proc),
         patch("tests.installer.wait_for_tcp_port", return_value=True),
-        patch("tests.installer.stop_app_tree") as stop_mock,
+        patch("tests.installer.stop_app_tree", return_value=True) as stop_mock,
     ):
         start_testgen_app(app_action, args_mock)
 
-    # Called once for the keyboard-interrupt branch (timeout=10) and again in
-    # the ``finally`` cleanup (timeout=5; no-op since proc already stopped).
+    # Called once for the keyboard-interrupt branch and again in the ``finally``
+    # cleanup (timeout=5; no-op since proc already stopped). The first wait gets the
+    # full grace period so a running job can reach a checkpoint before being killed.
     assert stop_mock.call_args_list[0].args[0] is proc
-    assert stop_mock.call_args_list[0].kwargs == {"timeout": 10}
-    console_msg_mock.assert_any_msg_contains("TestGen stopped")
+    assert stop_mock.call_args_list[0].kwargs == {"timeout": TESTGEN_STOP_GRACE_PERIOD}
+    console_msg_mock.assert_any_msg_contains("reach a checkpoint")
+    console_msg_mock.assert_any_msg_contains("TestGen stopped.")
     console_msg_mock.assert_any_msg_contains("tg start")
+
+
+@pytest.mark.unit
+def test_start_testgen_app_warns_when_grace_period_expires(app_action, args_mock, console_msg_mock, empty_tg_config):
+    """A tree that had to be force-killed lost its checkpoint — say so rather than
+    reporting a clean stop the user can't trust."""
+    args_mock.prod = "tg"
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.wait.side_effect = [KeyboardInterrupt(), 0]
+
+    with (
+        patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
+        patch("tests.installer.subprocess.Popen", return_value=proc),
+        patch("tests.installer.wait_for_tcp_port", return_value=True),
+        patch("tests.installer.stop_app_tree", return_value=False),
+    ):
+        start_testgen_app(app_action, args_mock)
+
+    console_msg_mock.assert_any_msg_contains("will restart from the beginning")
+
+
+@pytest.mark.unit
+def test_start_testgen_app_makes_no_grace_promise_on_windows(app_action, args_mock, console_msg_mock, empty_tg_config):
+    """Windows always force-kills, so promising a wait would be a lie and the
+    force-kill warning would fire on every single stop, saying nothing."""
+    args_mock.prod = "tg"
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.wait.side_effect = [KeyboardInterrupt(), 0]
+
+    with (
+        patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
+        patch("tests.installer.subprocess.Popen", return_value=proc),
+        patch("tests.installer.wait_for_tcp_port", return_value=True),
+        patch("tests.installer.supports_graceful_stop", return_value=False),
+        patch("tests.installer.stop_app_tree", return_value=False),
+    ):
+        start_testgen_app(app_action, args_mock)
+
+    printed = " ".join(str(c) for c in console_msg_mock.call_args_list)
+    assert "reach a checkpoint" not in printed
+    assert "will restart from the beginning" not in printed
+    console_msg_mock.assert_any_msg_contains("TestGen stopped.")
 
 
 # --- stop_app_tree ------------------------------------------------------------
@@ -197,7 +248,139 @@ def test_stop_app_tree_falls_through_to_kill_on_timeout():
         patch("tests.installer.os.killpg"),
         patch("tests.installer.os.getpgid", return_value=4242),
     ):
-        stop_app_tree(proc, timeout=1)
+        forced = stop_app_tree(proc, timeout=1)
+
+    proc.kill.assert_called_once()
+    assert forced is False  # had to be force-killed
+
+
+@pytest.mark.unit
+def test_stop_app_tree_reports_graceful_stop():
+    """Exiting within the grace period is the signal the caller uses to decide
+    whether a running job got to checkpoint."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+    proc.wait.return_value = 0
+
+    with (
+        patch("tests.installer.platform.system", return_value="Linux"),
+        patch("tests.installer.os.killpg"),
+        patch("tests.installer.os.getpgid", return_value=4242),
+    ):
+        assert stop_app_tree(proc, timeout=3) is True
+
+
+@pytest.mark.unit
+def test_stop_app_tree_swallows_second_interrupt():
+    """A second Ctrl+C while we wait means 'stop now'. It must force-kill here rather
+    than escaping to the caller's ``finally``, which would re-signal the tree — TestGen
+    reads a second signal as 'hurry up' and cuts the job mid-pause."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+    proc.wait.side_effect = [KeyboardInterrupt(), 0]
+
+    with (
+        patch("tests.installer.platform.system", return_value="Linux"),
+        patch("tests.installer.os.killpg") as killpg_mock,
+        patch("tests.installer.os.getpgid", return_value=4242),
+    ):
+        forced = stop_app_tree(proc, timeout=90)
+
+    assert forced is False
+    proc.kill.assert_called_once()
+    # SIGTERM first, then the escalation to SIGKILL.
+    assert [c.args[1] for c in killpg_mock.call_args_list] == [signal.SIGTERM, signal.SIGKILL]
+
+
+@pytest.mark.unit
+def test_stop_app_tree_windows_stop_is_always_forced():
+    """``taskkill /F`` gives the tree no chance to checkpoint, so the caller must not be
+    told the stop was graceful."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+    proc.wait.return_value = 0
+
+    with (
+        patch("tests.installer.platform.system", return_value="Windows"),
+        patch("tests.installer.subprocess.run"),
+    ):
+        assert stop_app_tree(proc, timeout=90) is False
+
+
+@pytest.mark.unit
+def test_force_kill_sweeps_orphans_outside_the_process_group():
+    """``run-app all`` starts its ui/scheduler children in their own sessions, so killpg
+    on the parent leaves them holding the port and the data dir — breaking the next
+    ``tg start``. The sweep is what actually finishes them off."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+
+    with (
+        patch("tests.installer.platform.system", return_value="Linux"),
+        patch("tests.installer.os.killpg"),
+        patch("tests.installer.os.getpgid", return_value=4242),
+        patch("tests.installer.stop_standalone_orphans") as sweep_mock,
+    ):
+        force_kill_app_tree(proc)
+
+    sweep_mock.assert_called_once()
+
+
+@pytest.mark.unit
+def test_second_interrupt_still_sweeps_orphans():
+    """The second-Ctrl+C path force-kills, so it owes the same cleanup."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+    proc.wait.side_effect = [KeyboardInterrupt(), 0]
+
+    with (
+        patch("tests.installer.platform.system", return_value="Linux"),
+        patch("tests.installer.os.killpg"),
+        patch("tests.installer.os.getpgid", return_value=4242),
+        patch("tests.installer.stop_standalone_orphans") as sweep_mock,
+    ):
+        assert stop_app_tree(proc, timeout=90) is False
+
+    sweep_mock.assert_called_once()
+
+
+@pytest.mark.unit
+def test_graceful_stop_does_not_sweep_orphans():
+    """A tree that stopped on its own has nothing left behind — don't reach for pkill."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+    proc.wait.return_value = 0
+
+    with (
+        patch("tests.installer.platform.system", return_value="Linux"),
+        patch("tests.installer.os.killpg"),
+        patch("tests.installer.os.getpgid", return_value=4242),
+        patch("tests.installer.stop_standalone_orphans") as sweep_mock,
+    ):
+        assert stop_app_tree(proc, timeout=3) is True
+
+    sweep_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_force_kill_falls_back_when_taskkill_fails():
+    """taskkill can be denied (elevated child). Without the proc.kill() backstop the
+    installer would report a stop that never happened."""
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.pid = 4242
+
+    with (
+        patch("tests.installer.platform.system", return_value="Windows"),
+        patch("tests.installer.subprocess.run", side_effect=OSError("Access denied")),
+    ):
+        force_kill_app_tree(proc, timeout=3)
 
     proc.kill.assert_called_once()
 

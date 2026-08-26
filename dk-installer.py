@@ -67,6 +67,10 @@ TESTGEN_COMPOSE_FILE = "docker-compose.yml"
 TESTGEN_LOG_FILE_PATH = pathlib.Path.home() / ".testgen" / "logs" / "app.log"
 TESTGEN_CONFIG_ENV_PATH = pathlib.Path.home() / ".testgen" / "config.env"
 TESTGEN_APP_READY_TIMEOUT = 120
+# Seconds TestGen is given to stop. Must exceed TG_JOB_SHUTDOWN_TIMEOUT (default 60s) plus
+# the time the process needs to record what stopped, or the scheduler is killed mid-wait and
+# a running job is cut instead of stopping at a checkpoint.
+TESTGEN_STOP_GRACE_PERIOD = 90
 INSTALL_MARKER_FILE = "dk-{}-install.json"
 INSTALL_MODE_DOCKER = "docker"
 INSTALL_MODE_PIP = "pip"
@@ -2079,6 +2083,32 @@ class ObsRunHeartbeatDemoAction(DemoContainerAction):
             CONSOLE.msg("Observability Heartbeat demo stopped.")
 
 
+def find_in_block(contents: str, block: str, key: str) -> typing.Optional[re.Match]:
+    """Find the ``key:`` line inside the compose ``block:`` mapping, or None.
+
+    Scans by indentation rather than parsing YAML — enough for the block-style files the
+    installer writes, and it avoids a runtime dependency. Offsets on the returned match
+    are absolute, so callers can splice around it; group 1 is the key's indent.
+
+    Scoping to a block is the point: the same key can appear on several services, and
+    only ``engine`` runs the scheduler. Deliberately says nothing about *which* image a
+    service uses — ``tg install --image`` accepts any registry.
+    """
+    headers = list(re.finditer(rf"^([ \t]*){re.escape(block)}:[ \t]*$", contents, flags=re.M))
+    if not headers:
+        return None
+    # Shallowest wins: a name like ``postgres`` is both a service and a nested key under
+    # another service's ``depends_on``, and it's the service the caller means.
+    header = min(headers, key=lambda match: len(match.group(1)))
+    # The block body ends at the first line indented no deeper than the block key itself.
+    end = len(contents)
+    for line in re.finditer(r"^([ \t]*)\S.*$", contents[header.end() :], flags=re.M):
+        if len(line.group(1)) <= len(header.group(1)):
+            end = header.end() + line.start()
+            break
+    return re.compile(rf"^([ \t]+){re.escape(key)}:.*$", flags=re.M).search(contents, header.end(), end)
+
+
 class UpdateComposeFileStep(Step):
     label = "Updating the Docker compose file"
 
@@ -2088,6 +2118,7 @@ class UpdateComposeFileStep(Step):
         self.update_token = False
         self.update_base_url = False
         self.update_api_port = False
+        self.update_stop_grace = False
         super().__init__()
 
     def pre_execute(self, action, args):
@@ -2149,6 +2180,17 @@ class UpdateComposeFileStep(Step):
             and not re.search(rf"- \d+:{TESTGEN_DEFAULT_API_PORT}\b", contents)
         )
 
+        # Compose files written before the grace period was added stop the engine after
+        # docker's 10s default, cutting a running job instead of letting it checkpoint.
+        # Only count it as a pending change if we can actually place it, or the step
+        # would report success having silently rewritten the file unchanged.
+        engine_image = find_in_block(contents, "engine", "image")
+        if engine_image is None:
+            LOG.info("No image line in the compose 'engine' service; leaving stop_grace_period alone")
+        self.update_stop_grace = (
+            engine_image is not None and find_in_block(contents, "engine", "stop_grace_period") is None
+        )
+
         if not any(
             (
                 self.update_version,
@@ -2156,6 +2198,7 @@ class UpdateComposeFileStep(Step):
                 self.update_token,
                 self.update_base_url,
                 self.update_api_port,
+                self.update_stop_grace,
             )
         ):
             CONSOLE.msg("No changes will be applied.")
@@ -2169,6 +2212,7 @@ class UpdateComposeFileStep(Step):
                 self.update_token,
                 self.update_base_url,
                 self.update_api_port,
+                self.update_stop_grace,
             )
         ):
             raise SkipStep
@@ -2209,6 +2253,15 @@ class UpdateComposeFileStep(Step):
             match = re.search(rf"^([ \t]+)- \d+:{TESTGEN_DEFAULT_PORT}\b.*$", contents, flags=re.M)
             new_mapping = f"\n{match.group(1)}- {TESTGEN_DEFAULT_API_PORT}:{TESTGEN_DEFAULT_API_PORT}"
             contents = contents[0 : match.end()] + new_mapping + contents[match.end() :]
+
+        if self.update_stop_grace and (image := find_in_block(contents, "engine", "image")):
+            indent = image.group(1)
+            grace = (
+                f"\n{indent}# Must exceed TG_JOB_SHUTDOWN_TIMEOUT (default 60s), or docker kills the scheduler"
+                f"\n{indent}# mid-wait and running jobs are cut instead of stopping at a checkpoint."
+                f"\n{indent}stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s"
+            )
+            contents = contents[: image.end()] + grace + contents[image.end() :]
 
         action.get_compose_file_path(args).write_text(contents)
 
@@ -2309,6 +2362,9 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
             services:
               engine:
                 image: {args.image}
+                # Must exceed TG_JOB_SHUTDOWN_TIMEOUT (default 60s), or docker kills the scheduler
+                # mid-wait and running jobs are cut instead of stopping at a checkpoint.
+                stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s
                 container_name: testgen
                 environment: *common-variables
                 volumes:
@@ -2524,17 +2580,25 @@ def read_testgen_config_env() -> dict[str, str]:
     return config
 
 
-def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> None:
-    """Terminate ``proc`` and all of its descendants.
+def supports_graceful_stop() -> bool:
+    """Whether we can ask the app to stop rather than kill it outright.
 
-    Plain ``proc.terminate()`` only kills the parent — pixeltable-pgserver
-    spawns ``postgres`` children that get orphaned otherwise. Cross-platform:
-    on Windows we shell out to ``taskkill /F /T``; on POSIX we send SIGTERM
-    to the whole process group (the parent was started with
-    ``start_new_session=True``).
+    POSIX only. On Windows the app is started without ``CREATE_NEW_PROCESS_GROUP``,
+    so there is no catchable signal we can deliver to it and ``taskkill /F`` is the
+    only reliable stop — a running job is cut there whatever grace period we would
+    nominally allow. Callers use this to avoid promising a wait that can't happen.
     """
-    if proc.poll() is not None:
-        return
+    return platform.system() != "Windows"
+
+
+def force_kill_app_tree(proc: subprocess.Popen, timeout: int = 5) -> None:
+    """Kill ``proc`` and every descendant, including those outside its process group.
+
+    ``testgen run-app all`` starts its ui/scheduler children in their own sessions, so
+    they sit outside ``proc``'s process group and outlive a ``killpg`` — killing only
+    the parent leaves the UI holding its port and postgres holding the data directory,
+    which then breaks the next ``tg start``. Hence the orphan sweep to finish the job.
+    """
     if platform.system() == "Windows":
         with contextlib.suppress(Exception):
             subprocess.run(
@@ -2546,16 +2610,51 @@ def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> None:
             )
     else:
         with contextlib.suppress(Exception):
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    # Backstop in case the platform kill above didn't land (e.g. taskkill denied).
+    proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=timeout)
+    stop_standalone_orphans()
+
+
+def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> bool:
+    """Terminate ``proc`` and all of its descendants. Returns whether it stopped on its own.
+
+    Plain ``proc.terminate()`` only kills the parent — pixeltable-pgserver
+    spawns ``postgres`` children that get orphaned otherwise. Cross-platform:
+    on Windows we shell out to ``taskkill /F /T``; on POSIX we send SIGTERM
+    to the whole process group (the parent was started with
+    ``start_new_session=True``) and let it forward the signal to its children.
+
+    ``timeout`` is how long the tree is given to shut down cooperatively before
+    it is force-killed — the caller passes ``TESTGEN_STOP_GRACE_PERIOD`` when a
+    running job may need to reach a checkpoint first. A second Ctrl+C during
+    that wait is taken as "stop now" and skips straight to the force-kill.
+
+    Returns ``True`` when the tree exited within ``timeout`` (or was already
+    gone), ``False`` when it had to be force-killed. See ``supports_graceful_stop``
+    for why Windows always reports ``False`` when there was a live process.
+    """
+    if proc.poll() is not None:
+        return True
+
+    if not supports_graceful_stop():
+        force_kill_app_tree(proc, timeout=timeout)
+        return False
+
+    with contextlib.suppress(Exception):
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     try:
         proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if platform.system() != "Windows":
-            with contextlib.suppress(Exception):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        proc.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+        # KeyboardInterrupt here is a second Ctrl+C while we were waiting. Swallow it
+        # rather than letting it unwind into the caller's ``finally``, which would send
+        # the tree another SIGTERM — TestGen reads a second signal as "hurry up" and
+        # force-kills the job mid-pause, losing exactly the checkpoint we were waiting for.
+        force_kill_app_tree(proc)
+        return False
+    return True
 
 
 def stop_standalone_orphans() -> None:
@@ -2687,8 +2786,21 @@ def start_testgen_app(action, args) -> None:
             # Reset the cursor to column 0 — the terminal echoed `^C` mid-line.
             print("")
             CONSOLE.msg("Stopping TestGen...")
-            stop_app_tree(proc, timeout=10)
-            CONSOLE.msg("TestGen stopped.")
+            graceful = supports_graceful_stop()
+            if graceful:
+                # A running profiling job stops at its next checkpoint rather than being cut,
+                # but that can take up to TG_JOB_SHUTDOWN_TIMEOUT — say so, or the wait reads
+                # as a hang and the user reaches for a second Ctrl+C.
+                CONSOLE.msg(
+                    f"Waiting up to {TESTGEN_STOP_GRACE_PERIOD} seconds for running jobs to reach a checkpoint..."
+                )
+            stopped_cleanly = stop_app_tree(proc, timeout=TESTGEN_STOP_GRACE_PERIOD)
+            # Only worth flagging where we actually offered a grace period. Windows always
+            # force-kills, so the warning would fire on every stop and mean nothing.
+            if graceful and not stopped_cleanly:
+                CONSOLE.msg("TestGen stopped. A job that was still running will restart from the beginning.")
+            else:
+                CONSOLE.msg("TestGen stopped.")
             CONSOLE.msg(f"To start it again, {command_hint(args.prod, 'start', 'Start TestGen')}.")
     finally:
         stop_app_tree(proc, timeout=5)
