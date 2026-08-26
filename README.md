@@ -11,29 +11,29 @@ This repo contains the installer and quickstart setup for the DataKitchen Open S
 * [**DataOps Observability**](https://docs.datakitchen.io/observability/what-is-observability/) monitors every tool used in the data journey, from source to customer value, across all  environments, tools, teams, datasets, and databases, enabling immediate detection, localization, and understanding of problems.
 
 
-[![DataKitchen Open Source Data Observability](https://datakitchen.io/wp-content/uploads/2024/04/both-products.png)](https://datakitchen.storylane.io/share/byag8vimd5tn)
+[![DataKitchen Open Source Data Observability](https://raw.githubusercontent.com/DataKitchen/data-observability-installer/main/docs/assets/images/readme/product-suite-overview.png)](https://datakitchen.storylane.io/share/byag8vimd5tn)
 [Interactive Product Tour](https://datakitchen.storylane.io/share/byag8vimd5tn)
 
 ## Features
 
 What does DataKitchen's  Open Source Data Observability do?  It helps you understand and <b>find data issues in new data</b>. 
 <p align="center">
-<img alt="DatKitchen Open Source Data Observability Features - New Data" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view.png" width="70%" >
+<img alt="DataKitchen Open Source Data Observability Features - New Data" src="https://raw.githubusercontent.com/DataKitchen/data-observability-installer/main/docs/assets/images/readme/feature-new-data.png" width="70%" >
 </p>
 It constantly <b>watches your data for data quality anomalies</b> and alerts you of problems.
 <br></br>
 <p align="center">
-<img alt="DatKitchen Open Source Data Observability Features - Data Ingestion and Polling" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-1.png" width="70%" >
+<img alt="DataKitchen Open Source Data Observability Features - Data Ingestion and Polling" src="https://raw.githubusercontent.com/DataKitchen/data-observability-installer/main/docs/assets/images/readme/feature-data-ingestion-polling.png" width="70%" >
 </p>
 It monitors <b>multi-tool, multi-data set, multi-hop data analytic production</b> processes.  
 <br></br>
 <p align="center">
-<img alt="DatKitchen Open Source Data Observability Features - Data Production" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-2.png" width="70%" >
+<img alt="DataKitchen Open Source Data Observability Features - Data Production" src="https://raw.githubusercontent.com/DataKitchen/data-observability-installer/main/docs/assets/images/readme/feature-data-production.png" width="70%" >
 </p>
 And it allows you to <b>make fast, safe development changes</b>.
 <br></br>
 <p align="center">
-<img alt="DatKitchen Open Source Data Observability Features - Development CI-CD" src="https://datakitchen.io/wp-content/uploads/2024/06/Quick-over-view-4.png" width="70%" >
+<img alt="DataKitchen Open Source Data Observability Features - Development CI-CD" src="https://raw.githubusercontent.com/DataKitchen/data-observability-installer/main/docs/assets/images/readme/feature-development-ci-cd.png" width="70%" >
 </p>
 
 
