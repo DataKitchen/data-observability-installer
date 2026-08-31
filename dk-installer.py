@@ -3384,8 +3384,11 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
 
         if self._resolved_mode == INSTALL_MODE_DOCKER:
             self._delete_docker(args)
-        else:
-            self._delete_pip(args)
+        elif not self._delete_pip(args):
+            # Something survived, so the install is still here and the marker has to stay:
+            # dropping it makes the retry we just recommended report "nothing to delete".
+            LOG.info("Keeping the install marker -- uninstall was incomplete")
+            return
         InstallMarker(self.data_folder, args.prod, args.compose_file_name).unlink()
 
     def _delete_docker(self, args):
@@ -3407,15 +3410,17 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
         stop_standalone_orphans()
 
         uv_path = resolve_uv_path(self.data_folder)
+        leftovers: list[str] = []
         if uv_path:
             try:
                 self.run_cmd(uv_path, "tool", "uninstall", TESTGEN_PIP_PACKAGE)
-            except CommandFailed:
+            except Exception:
+                # Not just CommandFailed: uv may fail to spawn at all. Everything below still
+                # needs to happen -- stopping here leaves more behind than doing nothing.
                 LOG.exception("Failed to uninstall testgen via uv")
-                CONSOLE.msg(
-                    "Note: 'uv tool uninstall testgen' reported an error "
-                    "(it may already be uninstalled); see session logs."
-                )
+            # Verify rather than trust the exit code: a process still holding a file in the
+            # tool environment makes the uninstall a silent no-op.
+            leftovers = surviving_tool_paths(self, uv_path)
         else:
             LOG.info("uv not found; skipping uv tool uninstall")
             CONSOLE.msg("uv not found; skipping 'uv tool uninstall testgen'.")
@@ -3428,17 +3433,56 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
         # may have other Streamlit projects on this machine. The config dir
         # is tiny and harmless if left behind.
 
-        # Remove the installer-local uv binary if we downloaded one. A
-        # pre-existing uv on PATH is left alone.
-        local_uv = self.data_folder / UV_BIN_SUBDIR / ("uv.exe" if platform.system() == "Windows" else "uv")
-        if remove_path(local_uv, label="installer-local uv"):
-            with contextlib.suppress(OSError):
-                local_uv.parent.rmdir()
+        # Remove the installer-local uv binary if we downloaded one. A pre-existing uv on
+        # PATH is left alone. Kept when something survived: the retry we are about to
+        # recommend needs a uv to run `tool uninstall` with.
+        if not leftovers:
+            local_uv = self.data_folder / UV_BIN_SUBDIR / ("uv.exe" if platform.system() == "Windows" else "uv")
+            if remove_path(local_uv, label="installer-local uv"):
+                with contextlib.suppress(OSError):
+                    local_uv.parent.rmdir()
 
         remove_path(self.data_folder / CREDENTIALS_FILE.format(args.prod))
         CONSOLE.space()
-        CONSOLE.msg("TestGen uninstalled.")
+        if leftovers:
+            CONSOLE.msg("TestGen was only partly uninstalled. These were left behind:")
+            for path in leftovers:
+                CONSOLE.msg(f"  {simplify_path(pathlib.Path(path))}")
+            CONSOLE.space()
+            CONSOLE.msg("This usually means a TestGen process was still running and held a file open.")
+            CONSOLE.msg("Close any running TestGen, then run this command again.")
+        else:
+            CONSOLE.msg("TestGen uninstalled.")
         CONSOLE.space()
+        return not leftovers
+
+
+def surviving_tool_paths(action, uv_path: str) -> list:
+    """Parts of the uv tool install still on disk after an uninstall attempt.
+
+    An empty list means the uninstall really did remove everything. Best-effort throughout:
+    this only decides what to *report*, and must never be the reason a delete stops early --
+    everything after it in ``_delete_pip`` still needs to run.
+    """
+
+    def read(*args_):
+        try:
+            return (action.run_cmd(uv_path, *args_, capture_text=True) or "").strip()
+        except Exception:
+            LOG.info("Could not read 'uv %s'; skipping that leftover check", " ".join(args_))
+            return ""
+
+    survivors = []
+    if (tool_dir := read("tool", "dir")) and (env := pathlib.Path(tool_dir) / TESTGEN_PIP_PACKAGE).exists():
+        LOG.info("Uninstall left [%s] behind", env)
+        survivors.append(str(env))
+        # Only alongside the environment: uv's bin directory is shared (commonly
+        # ~/.local/bin), so a shim there on its own may well be someone else's.
+        bin_name = "testgen.exe" if platform.system() == "Windows" else "testgen"
+        if (bin_dir := read("tool", "dir", "--bin")) and (shim := pathlib.Path(bin_dir) / bin_name).exists():
+            LOG.info("Uninstall left [%s] behind", shim)
+            survivors.append(str(shim))
+    return survivors
 
 
 class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
