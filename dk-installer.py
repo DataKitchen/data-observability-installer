@@ -2907,6 +2907,87 @@ class UvToolUpgradeStep(Step):
             CONSOLE.msg(f"Updated to v{new_version}.")
 
 
+def find_embedded_postgres(action) -> typing.Optional[pathlib.Path]:
+    """Path to the ``postgres`` binary pixeltable-pgserver bundles, or None if not found.
+
+    Only the two layouts uv creates are searched, rather than walking the whole tool
+    environment: site-packages is large and this runs on the install path.
+    """
+    uv_path = action.ctx.get("uv_path") or resolve_uv_path(action.data_folder)
+    if uv_path is None:
+        return None
+    try:
+        tool_dir = action.run_cmd(uv_path, "tool", "dir", capture_text=True)
+    except CommandFailed:
+        return None
+    if not tool_dir:
+        return None
+
+    env_dir = pathlib.Path(tool_dir.strip()) / TESTGEN_PIP_PACKAGE
+    for pattern in (
+        "Lib/site-packages/pixeltable_pgserver/pginstall*/bin/postgres*",
+        "lib/python*/site-packages/pixeltable_pgserver/pginstall*/bin/postgres*",
+    ):
+        for candidate in sorted(env_dir.glob(pattern)):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+class TestgenVerifyEmbeddedPostgresStep(Step):
+    """Smoke-test the bundled postgres before anything tries to use it.
+
+    A bundled build that cannot run on this machine surfaces deep inside ``standalone-setup``,
+    where ``initdb`` reports a failed *launch* of ``postgres`` as "program not found in the
+    same directory" -- pointing at the one thing that is not wrong. Observed with a
+    pixeltable-pgserver build shipped without a library it links against, but the cause does
+    not matter here: if the binary will not run, the install cannot succeed.
+
+    Checking before ``standalone-setup`` also keeps a failure from wedging later attempts.
+    A partial setup leaves ``config.env`` behind, and every retry then stops on an
+    interactive "Overwrite?" prompt that the installer has no terminal to answer.
+    """
+
+    label = "Verifying the embedded database"
+
+    def __init__(self):
+        self.unusable = False
+        super().__init__()
+
+    def execute(self, action, args):
+        postgres_path = find_embedded_postgres(action)
+        if postgres_path is None:
+            # Not finding it says nothing about whether it works -- let the real step decide.
+            LOG.info("Embedded postgres binary not found; skipping the check")
+            raise SkipStep
+
+        LOG.info("Verifying embedded postgres at [%s]", postgres_path)
+        try:
+            action.run_cmd(str(postgres_path), "-V")
+        except CommandFailed as e:
+            # The exit code is the diagnosis; keep it for the session zip, not the console.
+            LOG.warning("Embedded postgres [%s] failed to run: exit %s", postgres_path, e.ret_code)
+            self.unusable = True
+            raise AbortAction
+
+    def on_action_fail(self, action, args):
+        # Not from execute: steps run inside a partial console line, so anything printed
+        # there lands mid-line with "FAILED" appended.
+        if not self.unusable:
+            return
+        CONSOLE.msg("The embedded PostgreSQL database cannot run on this machine.")
+        if action.args_cmd == "upgrade":
+            # `tg install` refuses while an install marker exists, so Docker is only
+            # reachable from an existing pip install by removing it first.
+            CONSOLE.msg(f"To move to Docker, {command_hint(args.prod, 'delete', 'Uninstall TestGen')} first,")
+            CONSOLE.msg(f"then {command_hint(args.prod, 'install --docker', 'Install TestGen')}.")
+        else:
+            CONSOLE.msg(
+                f"To install TestGen with Docker instead, "
+                f"{command_hint(args.prod, 'install --docker', 'Install TestGen')}."
+            )
+
+
 class TestgenStandaloneSetupStep(Step):
     label = "Initializing TestGen"
 
@@ -2984,7 +3065,13 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
     prompts).
     """
 
-    pip_steps = [UvBootstrapStep, UvToolInstallStep, TestgenStandaloneSetupStep, TestgenQuickStartStep]
+    pip_steps = [
+        UvBootstrapStep,
+        UvToolInstallStep,
+        TestgenVerifyEmbeddedPostgresStep,
+        TestgenStandaloneSetupStep,
+        TestgenQuickStartStep,
+    ]
     docker_steps = [
         ComposeVerifyExistingInstallStep,
         DockerNetworkStep,
@@ -3188,7 +3275,7 @@ class TestgenStandaloneUpgradeStep(Step):
 class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
     """Upgrade an existing TestGen install. Mode is read from the install marker."""
 
-    pip_steps = [UvBootstrapStep, UvToolUpgradeStep, TestgenStandaloneUpgradeStep]
+    pip_steps = [UvBootstrapStep, UvToolUpgradeStep, TestgenVerifyEmbeddedPostgresStep, TestgenStandaloneUpgradeStep]
     docker_steps = [
         UpdateComposeFileStep,
         ComposeStopStep,
