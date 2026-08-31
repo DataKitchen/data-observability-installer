@@ -2643,16 +2643,20 @@ def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> bool:
     running job may need to reach a checkpoint first. A second Ctrl+C during
     that wait is taken as "stop now" and skips straight to the force-kill.
 
-    Returns ``True`` when the tree exited within ``timeout`` (or was already
-    gone), ``False`` when it had to be force-killed. See ``supports_graceful_stop``
-    for why Windows always reports ``False`` when there was a live process.
+    Returns ``True`` when the tree exited within ``timeout`` (or was already gone on a
+    platform where the parent tears its own tree down), ``False`` otherwise. Windows always
+    reports ``False``: it force-kills, and it cannot tell a stopped tree from a dead parent
+    with live children. See ``supports_graceful_stop``.
     """
-    if proc.poll() is not None:
-        return True
-
     if not supports_graceful_stop():
+        # Not conditioned on proc still running: a console Ctrl+C kills the parent along with
+        # us, while the UI -- which run_ui spawns into its own group -- never sees it. A dead
+        # parent here says nothing about its children.
         force_kill_app_tree(proc, timeout=timeout)
         return False
+
+    if proc.poll() is not None:
+        return True
 
     with contextlib.suppress(Exception):
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -2668,6 +2672,46 @@ def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> bool:
     return True
 
 
+# Command-line patterns identifying every process a standalone install spawns.
+#
+# Both are needed. ``testgen.*run-app`` misses the UI, which ``run_ui`` spawns as
+# ``python -m streamlit run .../testgen/ui/app.py`` -- no ``run-app`` in it, and in a session
+# of its own so killpg cannot reach it either. The tool-environment path catches that, and
+# postgres. Matching on an image name cannot work at all: every child is ``python``.
+STANDALONE_PROC_PATTERNS = (
+    r"testgen.*run-app",
+    r"tools[/\\]dataops-testgen",
+)
+
+# Separators are normalised first: postgres writes its command line with forward slashes,
+# the python children with backslashes. Substituted rather than str.format-ed -- PowerShell
+# is brace-heavy and every brace would need escaping.
+_WINDOWS_ORPHAN_SWEEP = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$spare = @(PIDS_TO_SPARE) + $PID
+Get-CimInstance Win32_Process | Where-Object {
+    $cmd = ($_.CommandLine -replace '\\', '/')
+    $exe = ($_.ExecutablePath -replace '\\', '/')
+    $spare -notcontains $_.ProcessId -and (MATCH_CLAUSE)
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+"""
+
+
+def _windows_sweep_script(spare_pid: int) -> str:
+    """The sweep, with its match clause built from ``STANDALONE_PROC_PATTERNS``.
+
+    Generated rather than spelled out in the script so the two platforms cannot drift:
+    Windows is the platform this sweep exists for, and a pattern edited in only one place
+    would silently reintroduce the leak. Separators are already normalised to ``/`` by the
+    script, so the ``[/\\]`` class collapses to a plain slash.
+    """
+    clause = " -or ".join(
+        f"($cmd -match '{pattern}') -or ($exe -match '{pattern}')"
+        for pattern in (p.replace(r"[/\\]", "/") for p in STANDALONE_PROC_PATTERNS)
+    )
+    return _WINDOWS_ORPHAN_SWEEP.replace("MATCH_CLAUSE", clause).replace("PIDS_TO_SPARE", str(spare_pid))
+
+
 def stop_standalone_orphans() -> None:
     """Best-effort kill of orphan ``testgen`` + embedded ``postgres`` processes
     left over from a previous dirty exit.
@@ -2677,11 +2721,12 @@ def stop_standalone_orphans() -> None:
     only logs when something is actually killed.
 
     Postgres is targeted by PID via ``<pgdata>/postmaster.pid`` so a user's
-    other Postgres installs aren't touched. ``testgen.exe`` is targeted by
-    image name on Windows — the installer itself is ``dk-installer.exe``,
-    so there's no risk of self-kill. Killing ``testgen.exe`` before
-    ``uv tool uninstall`` also matters on Windows: a running .exe holds an
-    exclusive file lock, so ``uv`` would otherwise fail to delete the binary.
+    other Postgres installs aren't touched. Everything else is matched on its
+    command line (see ``STANDALONE_PROC_PATTERNS``); the installer's own argv
+    matches neither pattern, so there's no risk of self-kill. Reaching the UI
+    matters on Windows especially: it holds the tool environment's ``python.exe``
+    open, so ``uv tool uninstall`` cannot delete it and ``tg delete`` leaves the
+    install behind.
     """
     # Outer guard so a transient filesystem/permission glitch in this best-effort
     # cleanup can never crash the install or delete flow.
@@ -2708,27 +2753,37 @@ def stop_standalone_orphans() -> None:
                         os.kill(postgres_pid, signal.SIGKILL)
 
         if is_windows:
-            # Image-name match — covers any leftover `testgen run-app` parents.
-            # `/T` propagates to their children (UI/scheduler/server subprocesses).
+            # Kill each match by PID, not ``taskkill /T``: that walks the tree as it stands,
+            # so killing a parent re-parents its children mid-walk and they escape.
             with contextlib.suppress(Exception):
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/IM", "testgen.exe"],
+                result = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        _windows_sweep_script(os.getpid()),
+                    ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     check=False,
                 )
+                if result.returncode != 0:
+                    # PowerShell can be absent or blocked by policy. Without this the sweep
+                    # does nothing and leaves no trace of why the next start found the port taken.
+                    LOG.warning("Orphan sweep exited %s; leftover processes may remain", result.returncode)
         else:
-            # `pkill -f` matches against the full command line. The installer's own
-            # argv is `python dk-installer.py …` — doesn't contain `run-app`, so
-            # no self-kill risk.
-            with contextlib.suppress(Exception):
-                subprocess.run(
-                    ["pkill", "-9", "-f", r"testgen.*run-app"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
+            # ``pkill -f`` matches against the full command line. The installer's own
+            # argv is ``python dk-installer.py ...`` -- matches neither pattern.
+            for pattern in STANDALONE_PROC_PATTERNS:
+                with contextlib.suppress(Exception):
+                    subprocess.run(
+                        ["pkill", "-9", "-f", pattern],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
     except Exception:
         LOG.exception("Unexpected error during orphan cleanup; continuing")
 
