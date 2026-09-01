@@ -455,3 +455,39 @@ def console_msg_mock():
 
         mock.assert_any_msg_contains = _assert_any_msg_contains
         yield mock
+
+
+@pytest.mark.unit
+def test_windows_sweeps_even_when_the_parent_is_already_gone():
+    """A console Ctrl+C reaches everything in the console's process group, so the parent is
+    usually dead before we are called -- while the UI, spawned into its own group, is not.
+    Returning early on a dead parent is what left Streamlit holding port 8501."""
+    proc = MagicMock()
+    proc.poll.return_value = 0  # parent already exited
+    proc.pid = 4242
+
+    with (
+        patch("tests.installer.platform.system", return_value="Windows"),
+        patch("tests.installer.subprocess.run"),
+        patch("tests.installer.stop_standalone_orphans") as sweep_mock,
+    ):
+        assert stop_app_tree(proc, timeout=90) is False
+
+    sweep_mock.assert_called_once()
+
+
+@pytest.mark.unit
+def test_posix_still_trusts_a_dead_parent():
+    """On POSIX the parent forwards the signal to its children before exiting, so a dead one
+    really does mean a stopped tree -- no need to reach for pkill on every clean stop."""
+    proc = MagicMock()
+    proc.poll.return_value = 0
+    proc.pid = 4242
+
+    with (
+        patch("tests.installer.platform.system", return_value="Linux"),
+        patch("tests.installer.stop_standalone_orphans") as sweep_mock,
+    ):
+        assert stop_app_tree(proc, timeout=90) is True
+
+    sweep_mock.assert_not_called()

@@ -37,12 +37,13 @@ def pip_upgrade_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
 @pytest.mark.integration
 def test_tg_pip_upgrade_happy_path(pip_upgrade_action, start_cmd_mock, stdout_mock, tmp_data_folder, console_msg_mock):
     # Step pipeline: pre_execute uv tool list → execute uv --version
-    # (UvBootstrapStep records uv version) → uv tool upgrade →
-    # testgen upgrade-system-version → on_action_success uv tool list.
+    # (UvBootstrapStep records uv version) → uv tool upgrade → embedded-postgres
+    # check → testgen upgrade-system-version → on_action_success uv tool list.
     stdout_mock.side_effect = [
         ["dataops-testgen v5.10.0", "- testgen"],
         ["uv 0.11.7"],
         [],
+        [],  # `uv tool dir` for the embedded-postgres check (no binary -> skipped)
         [],
         ["dataops-testgen v5.10.0", "- testgen"],
     ]
@@ -84,6 +85,7 @@ def test_tg_pip_upgrade_reports_version_change(pip_upgrade_action, start_cmd_moc
         ["dataops-testgen v5.10.0", "- testgen"],
         ["uv 0.11.7"],
         [],
+        [],  # `uv tool dir` for the embedded-postgres check (no binary -> skipped)
         [],
         ["dataops-testgen v5.10.1", "- testgen"],
     ]
@@ -105,6 +107,7 @@ def test_tg_pip_upgrade_marker_preserves_created_on(pip_upgrade_action, stdout_m
         ["dataops-testgen v5.10.0", "- testgen"],
         ["uv 0.11.7"],
         [],
+        [],  # `uv tool dir` for the embedded-postgres check (no binary -> skipped)
         [],
         ["dataops-testgen v5.10.0", "- testgen"],
     ]

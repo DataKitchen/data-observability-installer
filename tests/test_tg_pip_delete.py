@@ -186,3 +186,106 @@ def test_delete_routes_to_docker_legacy(delete_action, args_mock, tmp_data_folde
 
     docker_branch.assert_called_once_with(args_mock)
     assert delete_action.analytics.additional_properties["install_mode"] == INSTALL_MODE_DOCKER
+
+
+@pytest.mark.integration
+def test_pip_delete_reports_what_survived(pip_delete_action, start_cmd_mock, stdout_mock, tmp_path, console_msg_mock):
+    """A process we failed to stop can hold a file in the tool environment open, making
+    `uv tool uninstall` a no-op. Reporting success then sends the user to a reinstall
+    that cannot work either -- so check the disk rather than trusting the exit code."""
+    tool_dir, bin_dir = tmp_path / "tools", tmp_path / "bin"
+    tool_dir.mkdir()
+    bin_dir.mkdir()
+    (tool_dir / "dataops-testgen").mkdir()  # survived the uninstall
+    (bin_dir / "testgen").write_text("#!/bin/sh\n")  # so did the entry point
+    # uv tool uninstall, then `uv tool dir`, then `uv tool dir --bin`
+    stdout_mock.side_effect = [[], [str(tool_dir)], [str(bin_dir)]]
+
+    with patch("tests.installer.shutil.which", return_value="/usr/local/bin/uv"):
+        pip_delete_action.execute()
+
+    console_msg_mock.assert_any_msg_contains("only partly uninstalled")
+    console_msg_mock.assert_any_msg_contains("still running and held a file open")
+    printed = " ".join(str(c) for c in console_msg_mock.call_args_list)
+    assert "dataops-testgen" in printed
+    assert "TestGen uninstalled." not in printed
+
+
+@pytest.mark.integration
+def test_pip_delete_reports_success_when_nothing_survives(
+    pip_delete_action, start_cmd_mock, stdout_mock, tmp_path, console_msg_mock
+):
+    tool_dir, bin_dir = tmp_path / "tools", tmp_path / "bin"
+    tool_dir.mkdir()
+    bin_dir.mkdir()
+    # uv tool uninstall, then `uv tool dir`, then `uv tool dir --bin`
+    stdout_mock.side_effect = [[], [str(tool_dir)], [str(bin_dir)]]
+
+    with patch("tests.installer.shutil.which", return_value="/usr/local/bin/uv"):
+        pip_delete_action.execute()
+
+    console_msg_mock.assert_any_msg_contains("TestGen uninstalled.")
+    printed = " ".join(str(c) for c in console_msg_mock.call_args_list)
+    assert "only partly uninstalled" not in printed
+
+
+@pytest.mark.integration
+def test_pip_delete_keeps_the_marker_when_incomplete(
+    pip_delete_action, start_cmd_mock, stdout_mock, tmp_data_folder, tmp_path, console_msg_mock
+):
+    """The retry we recommend has to be able to do something. Dropping the marker makes the
+    next `tg delete` report "nothing to delete", and removing the installer-local uv leaves
+    it with nothing to uninstall with."""
+    tool_dir, bin_dir = tmp_path / "tools", tmp_path / "bin"
+    tool_dir.mkdir()
+    bin_dir.mkdir()
+    (tool_dir / "dataops-testgen").mkdir()
+    local_uv = Path(tmp_data_folder) / "bin" / "uv"
+    local_uv.parent.mkdir(parents=True, exist_ok=True)
+    local_uv.write_text("#!/bin/sh\n")
+    stdout_mock.side_effect = [[], [str(tool_dir)], [str(bin_dir)]]
+
+    with patch("tests.installer.shutil.which", return_value="/usr/local/bin/uv"):
+        pip_delete_action.execute()
+
+    console_msg_mock.assert_any_msg_contains("only partly uninstalled")
+    assert (Path(tmp_data_folder) / INSTALL_MARKER_FILE.format("tg")).exists(), "marker was dropped"
+    assert local_uv.exists(), "installer-local uv was removed, so the retry has no uv"
+
+
+@pytest.mark.integration
+def test_pip_delete_ignores_a_foreign_shim(
+    pip_delete_action, start_cmd_mock, stdout_mock, tmp_data_folder, tmp_path, console_msg_mock
+):
+    """uv's bin directory is shared (commonly ~/.local/bin). A `testgen` there when the tool
+    environment is gone is somebody else's -- reporting it would call a clean uninstall a
+    failure, and would then strand the user via the kept marker."""
+    tool_dir, bin_dir = tmp_path / "tools", tmp_path / "bin"
+    tool_dir.mkdir()
+    bin_dir.mkdir()
+    (bin_dir / "testgen").write_text("#!/bin/sh\n")  # not ours
+    stdout_mock.side_effect = [[], [str(tool_dir)], [str(bin_dir)]]
+
+    with patch("tests.installer.shutil.which", return_value="/usr/local/bin/uv"):
+        pip_delete_action.execute()
+
+    console_msg_mock.assert_any_msg_contains("TestGen uninstalled.")
+    assert not (Path(tmp_data_folder) / INSTALL_MARKER_FILE.format("tg")).exists()
+
+
+@pytest.mark.integration
+def test_pip_delete_survives_a_broken_uv(pip_delete_action, start_cmd_mock, stdout_mock, tmp_path, tmp_data_folder):
+    """The leftover check runs before the rest of the cleanup, so a uv that cannot be spawned
+    must not abort the delete and leave more behind than before."""
+    fake_tg_home = tmp_path / ".testgen"
+    fake_tg_home.mkdir()
+    (fake_tg_home / "config.env").write_text("x=1\n")
+    start_cmd_mock.side_effect = PermissionError("blocked by security software")
+
+    with (
+        patch("tests.installer.shutil.which", return_value="/usr/local/bin/uv"),
+        patch.dict("tests.installer.os.environ", {"TG_TESTGEN_HOME": str(fake_tg_home)}),
+    ):
+        pip_delete_action.execute()
+
+    assert not fake_tg_home.exists(), "delete stopped early and left the data directory"

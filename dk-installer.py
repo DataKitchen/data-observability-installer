@@ -2643,16 +2643,20 @@ def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> bool:
     running job may need to reach a checkpoint first. A second Ctrl+C during
     that wait is taken as "stop now" and skips straight to the force-kill.
 
-    Returns ``True`` when the tree exited within ``timeout`` (or was already
-    gone), ``False`` when it had to be force-killed. See ``supports_graceful_stop``
-    for why Windows always reports ``False`` when there was a live process.
+    Returns ``True`` when the tree exited within ``timeout`` (or was already gone on a
+    platform where the parent tears its own tree down), ``False`` otherwise. Windows always
+    reports ``False``: it force-kills, and it cannot tell a stopped tree from a dead parent
+    with live children. See ``supports_graceful_stop``.
     """
-    if proc.poll() is not None:
-        return True
-
     if not supports_graceful_stop():
+        # Not conditioned on proc still running: a console Ctrl+C kills the parent along with
+        # us, while the UI -- which run_ui spawns into its own group -- never sees it. A dead
+        # parent here says nothing about its children.
         force_kill_app_tree(proc, timeout=timeout)
         return False
+
+    if proc.poll() is not None:
+        return True
 
     with contextlib.suppress(Exception):
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -2668,6 +2672,46 @@ def stop_app_tree(proc: subprocess.Popen, timeout: int = 10) -> bool:
     return True
 
 
+# Command-line patterns identifying every process a standalone install spawns.
+#
+# Both are needed. ``testgen.*run-app`` misses the UI, which ``run_ui`` spawns as
+# ``python -m streamlit run .../testgen/ui/app.py`` -- no ``run-app`` in it, and in a session
+# of its own so killpg cannot reach it either. The tool-environment path catches that, and
+# postgres. Matching on an image name cannot work at all: every child is ``python``.
+STANDALONE_PROC_PATTERNS = (
+    r"testgen.*run-app",
+    r"tools[/\\]dataops-testgen",
+)
+
+# Separators are normalised first: postgres writes its command line with forward slashes,
+# the python children with backslashes. Substituted rather than str.format-ed -- PowerShell
+# is brace-heavy and every brace would need escaping.
+_WINDOWS_ORPHAN_SWEEP = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$spare = @(PIDS_TO_SPARE) + $PID
+Get-CimInstance Win32_Process | Where-Object {
+    $cmd = ($_.CommandLine -replace '\\', '/')
+    $exe = ($_.ExecutablePath -replace '\\', '/')
+    $spare -notcontains $_.ProcessId -and (MATCH_CLAUSE)
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+"""
+
+
+def _windows_sweep_script(spare_pid: int) -> str:
+    """The sweep, with its match clause built from ``STANDALONE_PROC_PATTERNS``.
+
+    Generated rather than spelled out in the script so the two platforms cannot drift:
+    Windows is the platform this sweep exists for, and a pattern edited in only one place
+    would silently reintroduce the leak. Separators are already normalised to ``/`` by the
+    script, so the ``[/\\]`` class collapses to a plain slash.
+    """
+    clause = " -or ".join(
+        f"($cmd -match '{pattern}') -or ($exe -match '{pattern}')"
+        for pattern in (p.replace(r"[/\\]", "/") for p in STANDALONE_PROC_PATTERNS)
+    )
+    return _WINDOWS_ORPHAN_SWEEP.replace("MATCH_CLAUSE", clause).replace("PIDS_TO_SPARE", str(spare_pid))
+
+
 def stop_standalone_orphans() -> None:
     """Best-effort kill of orphan ``testgen`` + embedded ``postgres`` processes
     left over from a previous dirty exit.
@@ -2677,11 +2721,12 @@ def stop_standalone_orphans() -> None:
     only logs when something is actually killed.
 
     Postgres is targeted by PID via ``<pgdata>/postmaster.pid`` so a user's
-    other Postgres installs aren't touched. ``testgen.exe`` is targeted by
-    image name on Windows — the installer itself is ``dk-installer.exe``,
-    so there's no risk of self-kill. Killing ``testgen.exe`` before
-    ``uv tool uninstall`` also matters on Windows: a running .exe holds an
-    exclusive file lock, so ``uv`` would otherwise fail to delete the binary.
+    other Postgres installs aren't touched. Everything else is matched on its
+    command line (see ``STANDALONE_PROC_PATTERNS``); the installer's own argv
+    matches neither pattern, so there's no risk of self-kill. Reaching the UI
+    matters on Windows especially: it holds the tool environment's ``python.exe``
+    open, so ``uv tool uninstall`` cannot delete it and ``tg delete`` leaves the
+    install behind.
     """
     # Outer guard so a transient filesystem/permission glitch in this best-effort
     # cleanup can never crash the install or delete flow.
@@ -2708,27 +2753,37 @@ def stop_standalone_orphans() -> None:
                         os.kill(postgres_pid, signal.SIGKILL)
 
         if is_windows:
-            # Image-name match — covers any leftover `testgen run-app` parents.
-            # `/T` propagates to their children (UI/scheduler/server subprocesses).
+            # Kill each match by PID, not ``taskkill /T``: that walks the tree as it stands,
+            # so killing a parent re-parents its children mid-walk and they escape.
             with contextlib.suppress(Exception):
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/IM", "testgen.exe"],
+                result = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        _windows_sweep_script(os.getpid()),
+                    ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     check=False,
                 )
+                if result.returncode != 0:
+                    # PowerShell can be absent or blocked by policy. Without this the sweep
+                    # does nothing and leaves no trace of why the next start found the port taken.
+                    LOG.warning("Orphan sweep exited %s; leftover processes may remain", result.returncode)
         else:
-            # `pkill -f` matches against the full command line. The installer's own
-            # argv is `python dk-installer.py …` — doesn't contain `run-app`, so
-            # no self-kill risk.
-            with contextlib.suppress(Exception):
-                subprocess.run(
-                    ["pkill", "-9", "-f", r"testgen.*run-app"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
+            # ``pkill -f`` matches against the full command line. The installer's own
+            # argv is ``python dk-installer.py ...`` -- matches neither pattern.
+            for pattern in STANDALONE_PROC_PATTERNS:
+                with contextlib.suppress(Exception):
+                    subprocess.run(
+                        ["pkill", "-9", "-f", pattern],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
     except Exception:
         LOG.exception("Unexpected error during orphan cleanup; continuing")
 
@@ -2852,6 +2907,87 @@ class UvToolUpgradeStep(Step):
             CONSOLE.msg(f"Updated to v{new_version}.")
 
 
+def find_embedded_postgres(action) -> typing.Optional[pathlib.Path]:
+    """Path to the ``postgres`` binary pixeltable-pgserver bundles, or None if not found.
+
+    Only the two layouts uv creates are searched, rather than walking the whole tool
+    environment: site-packages is large and this runs on the install path.
+    """
+    uv_path = action.ctx.get("uv_path") or resolve_uv_path(action.data_folder)
+    if uv_path is None:
+        return None
+    try:
+        tool_dir = action.run_cmd(uv_path, "tool", "dir", capture_text=True)
+    except CommandFailed:
+        return None
+    if not tool_dir:
+        return None
+
+    env_dir = pathlib.Path(tool_dir.strip()) / TESTGEN_PIP_PACKAGE
+    for pattern in (
+        "Lib/site-packages/pixeltable_pgserver/pginstall*/bin/postgres*",
+        "lib/python*/site-packages/pixeltable_pgserver/pginstall*/bin/postgres*",
+    ):
+        for candidate in sorted(env_dir.glob(pattern)):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+class TestgenVerifyEmbeddedPostgresStep(Step):
+    """Smoke-test the bundled postgres before anything tries to use it.
+
+    A bundled build that cannot run on this machine surfaces deep inside ``standalone-setup``,
+    where ``initdb`` reports a failed *launch* of ``postgres`` as "program not found in the
+    same directory" -- pointing at the one thing that is not wrong. Observed with a
+    pixeltable-pgserver build shipped without a library it links against, but the cause does
+    not matter here: if the binary will not run, the install cannot succeed.
+
+    Checking before ``standalone-setup`` also keeps a failure from wedging later attempts.
+    A partial setup leaves ``config.env`` behind, and every retry then stops on an
+    interactive "Overwrite?" prompt that the installer has no terminal to answer.
+    """
+
+    label = "Verifying the embedded database"
+
+    def __init__(self):
+        self.unusable = False
+        super().__init__()
+
+    def execute(self, action, args):
+        postgres_path = find_embedded_postgres(action)
+        if postgres_path is None:
+            # Not finding it says nothing about whether it works -- let the real step decide.
+            LOG.info("Embedded postgres binary not found; skipping the check")
+            raise SkipStep
+
+        LOG.info("Verifying embedded postgres at [%s]", postgres_path)
+        try:
+            action.run_cmd(str(postgres_path), "-V")
+        except CommandFailed as e:
+            # The exit code is the diagnosis; keep it for the session zip, not the console.
+            LOG.warning("Embedded postgres [%s] failed to run: exit %s", postgres_path, e.ret_code)
+            self.unusable = True
+            raise AbortAction
+
+    def on_action_fail(self, action, args):
+        # Not from execute: steps run inside a partial console line, so anything printed
+        # there lands mid-line with "FAILED" appended.
+        if not self.unusable:
+            return
+        CONSOLE.msg("The embedded PostgreSQL database cannot run on this machine.")
+        if action.args_cmd == "upgrade":
+            # `tg install` refuses while an install marker exists, so Docker is only
+            # reachable from an existing pip install by removing it first.
+            CONSOLE.msg(f"To move to Docker, {command_hint(args.prod, 'delete', 'Uninstall TestGen')} first,")
+            CONSOLE.msg(f"then {command_hint(args.prod, 'install --docker', 'Install TestGen')}.")
+        else:
+            CONSOLE.msg(
+                f"To install TestGen with Docker instead, "
+                f"{command_hint(args.prod, 'install --docker', 'Install TestGen')}."
+            )
+
+
 class TestgenStandaloneSetupStep(Step):
     label = "Initializing TestGen"
 
@@ -2929,7 +3065,13 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
     prompts).
     """
 
-    pip_steps = [UvBootstrapStep, UvToolInstallStep, TestgenStandaloneSetupStep, TestgenQuickStartStep]
+    pip_steps = [
+        UvBootstrapStep,
+        UvToolInstallStep,
+        TestgenVerifyEmbeddedPostgresStep,
+        TestgenStandaloneSetupStep,
+        TestgenQuickStartStep,
+    ]
     docker_steps = [
         ComposeVerifyExistingInstallStep,
         DockerNetworkStep,
@@ -3133,7 +3275,7 @@ class TestgenStandaloneUpgradeStep(Step):
 class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
     """Upgrade an existing TestGen install. Mode is read from the install marker."""
 
-    pip_steps = [UvBootstrapStep, UvToolUpgradeStep, TestgenStandaloneUpgradeStep]
+    pip_steps = [UvBootstrapStep, UvToolUpgradeStep, TestgenVerifyEmbeddedPostgresStep, TestgenStandaloneUpgradeStep]
     docker_steps = [
         UpdateComposeFileStep,
         ComposeStopStep,
@@ -3329,8 +3471,11 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
 
         if self._resolved_mode == INSTALL_MODE_DOCKER:
             self._delete_docker(args)
-        else:
-            self._delete_pip(args)
+        elif not self._delete_pip(args):
+            # Something survived, so the install is still here and the marker has to stay:
+            # dropping it makes the retry we just recommended report "nothing to delete".
+            LOG.info("Keeping the install marker -- uninstall was incomplete")
+            return
         InstallMarker(self.data_folder, args.prod, args.compose_file_name).unlink()
 
     def _delete_docker(self, args):
@@ -3352,15 +3497,17 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
         stop_standalone_orphans()
 
         uv_path = resolve_uv_path(self.data_folder)
+        leftovers: list[str] = []
         if uv_path:
             try:
                 self.run_cmd(uv_path, "tool", "uninstall", TESTGEN_PIP_PACKAGE)
-            except CommandFailed:
+            except Exception:
+                # Not just CommandFailed: uv may fail to spawn at all. Everything below still
+                # needs to happen -- stopping here leaves more behind than doing nothing.
                 LOG.exception("Failed to uninstall testgen via uv")
-                CONSOLE.msg(
-                    "Note: 'uv tool uninstall testgen' reported an error "
-                    "(it may already be uninstalled); see session logs."
-                )
+            # Verify rather than trust the exit code: a process still holding a file in the
+            # tool environment makes the uninstall a silent no-op.
+            leftovers = surviving_tool_paths(self, uv_path)
         else:
             LOG.info("uv not found; skipping uv tool uninstall")
             CONSOLE.msg("uv not found; skipping 'uv tool uninstall testgen'.")
@@ -3373,17 +3520,56 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
         # may have other Streamlit projects on this machine. The config dir
         # is tiny and harmless if left behind.
 
-        # Remove the installer-local uv binary if we downloaded one. A
-        # pre-existing uv on PATH is left alone.
-        local_uv = self.data_folder / UV_BIN_SUBDIR / ("uv.exe" if platform.system() == "Windows" else "uv")
-        if remove_path(local_uv, label="installer-local uv"):
-            with contextlib.suppress(OSError):
-                local_uv.parent.rmdir()
+        # Remove the installer-local uv binary if we downloaded one. A pre-existing uv on
+        # PATH is left alone. Kept when something survived: the retry we are about to
+        # recommend needs a uv to run `tool uninstall` with.
+        if not leftovers:
+            local_uv = self.data_folder / UV_BIN_SUBDIR / ("uv.exe" if platform.system() == "Windows" else "uv")
+            if remove_path(local_uv, label="installer-local uv"):
+                with contextlib.suppress(OSError):
+                    local_uv.parent.rmdir()
 
         remove_path(self.data_folder / CREDENTIALS_FILE.format(args.prod))
         CONSOLE.space()
-        CONSOLE.msg("TestGen uninstalled.")
+        if leftovers:
+            CONSOLE.msg("TestGen was only partly uninstalled. These were left behind:")
+            for path in leftovers:
+                CONSOLE.msg(f"  {simplify_path(pathlib.Path(path))}")
+            CONSOLE.space()
+            CONSOLE.msg("This usually means a TestGen process was still running and held a file open.")
+            CONSOLE.msg("Close any running TestGen, then run this command again.")
+        else:
+            CONSOLE.msg("TestGen uninstalled.")
         CONSOLE.space()
+        return not leftovers
+
+
+def surviving_tool_paths(action, uv_path: str) -> list:
+    """Parts of the uv tool install still on disk after an uninstall attempt.
+
+    An empty list means the uninstall really did remove everything. Best-effort throughout:
+    this only decides what to *report*, and must never be the reason a delete stops early --
+    everything after it in ``_delete_pip`` still needs to run.
+    """
+
+    def read(*args_):
+        try:
+            return (action.run_cmd(uv_path, *args_, capture_text=True) or "").strip()
+        except Exception:
+            LOG.info("Could not read 'uv %s'; skipping that leftover check", " ".join(args_))
+            return ""
+
+    survivors = []
+    if (tool_dir := read("tool", "dir")) and (env := pathlib.Path(tool_dir) / TESTGEN_PIP_PACKAGE).exists():
+        LOG.info("Uninstall left [%s] behind", env)
+        survivors.append(str(env))
+        # Only alongside the environment: uv's bin directory is shared (commonly
+        # ~/.local/bin), so a shim there on its own may well be someone else's.
+        bin_name = "testgen.exe" if platform.system() == "Windows" else "testgen"
+        if (bin_dir := read("tool", "dir", "--bin")) and (shim := pathlib.Path(bin_dir) / bin_name).exists():
+            LOG.info("Uninstall left [%s] behind", shim)
+            survivors.append(str(shim))
+    return survivors
 
 
 class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
