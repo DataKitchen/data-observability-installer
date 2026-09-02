@@ -29,6 +29,20 @@ jobs:
       artifact_path: reports/
     secrets: inherit
 
+  test-windows:
+    name: Run tests on Windows
+    uses: ./.github/workflows/python-job.yml
+    with:
+      runner: windows-latest
+      run: |
+        # tests/installer.py is a symlink to ../dk-installer.py. A Windows checkout
+        # materializes it as a plain file holding the target path unless core.symlinks is
+        # enabled, which turns `from tests.installer import ...` into a SyntaxError. Copy
+        # over it when that is what we got; a real symlink is left alone.
+        if [ ! -L tests/installer.py ]; then cp dk-installer.py tests/installer.py; fi
+        pytest
+    secrets: inherit
+
   report-coverage:
     name: Report tests coverage
     runs-on: ubuntu-latest

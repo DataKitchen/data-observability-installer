@@ -1,3 +1,4 @@
+import os
 import signal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,6 +17,14 @@ from tests.installer import (
     InstallMarker,
     TESTGEN_STOP_GRACE_PERIOD,
 )
+
+
+# The POSIX stop path signals a process group, which Windows has no equivalent of --
+# ``supports_graceful_stop`` keeps the installer off that branch there entirely. These are
+# skipped rather than shimmed: synthesizing ``os.killpg``/``signal.SIGKILL`` would also make
+# a future capability-based ``supports_graceful_stop`` report True on Windows and quietly
+# send the Windows tests down the wrong branch.
+posix_only = pytest.mark.skipif(not hasattr(os, "killpg"), reason="needs POSIX process groups")
 
 
 # --- start_testgen_app helper -------------------------------------------------
@@ -55,6 +64,10 @@ def test_start_testgen_app_happy_path(app_action, args_mock, proc_running_then_s
         patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
         patch("tests.installer.subprocess.Popen", return_value=proc_running_then_stops) as popen_mock,
         patch("tests.installer.wait_for_tcp_port", return_value=True) as port_mock,
+        # The ``finally`` cleanup is not this test's subject, and on Windows it shells out
+        # via ``subprocess.run`` -- which goes through the Popen patched right above and
+        # would count as a second app launch.
+        patch("tests.installer.stop_app_tree"),
     ):
         start_testgen_app(app_action, args_mock)
 
@@ -120,6 +133,9 @@ def test_start_testgen_app_handles_keyboard_interrupt(app_action, args_mock, con
         patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
         patch("tests.installer.subprocess.Popen", return_value=proc),
         patch("tests.installer.wait_for_tcp_port", return_value=True),
+        # Pinned: the grace-period messages below are POSIX-only behaviour, and the
+        # Windows counterpart is test_start_testgen_app_makes_no_grace_promise_on_windows.
+        patch("tests.installer.supports_graceful_stop", return_value=True),
         patch("tests.installer.stop_app_tree", return_value=True) as stop_mock,
     ):
         start_testgen_app(app_action, args_mock)
@@ -148,6 +164,8 @@ def test_start_testgen_app_warns_when_grace_period_expires(app_action, args_mock
         patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
         patch("tests.installer.subprocess.Popen", return_value=proc),
         patch("tests.installer.wait_for_tcp_port", return_value=True),
+        # Pinned: Windows never promises a grace period, so it never warns one expired.
+        patch("tests.installer.supports_graceful_stop", return_value=True),
         patch("tests.installer.stop_app_tree", return_value=False),
     ):
         start_testgen_app(app_action, args_mock)
@@ -185,10 +203,16 @@ def test_start_testgen_app_makes_no_grace_promise_on_windows(app_action, args_mo
 
 @pytest.mark.unit
 def test_stop_app_tree_no_op_when_proc_already_exited():
+    """POSIX only. Windows deliberately does not take this shortcut: a console Ctrl+C
+    kills the parent along with the installer, so a dead parent there says nothing about
+    its children -- see test_stop_app_tree_windows_uses_taskkill_tree."""
     proc = MagicMock()
     proc.poll.return_value = 0  # already exited
 
-    with patch("tests.installer.subprocess.run") as run_mock:
+    with (
+        patch("tests.installer.supports_graceful_stop", return_value=True),
+        patch("tests.installer.subprocess.run") as run_mock,
+    ):
         stop_app_tree(proc)
 
     run_mock.assert_not_called()
@@ -215,6 +239,7 @@ def test_stop_app_tree_windows_uses_taskkill_tree():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_posix_signals_process_group():
     proc = MagicMock()
     proc.poll.return_value = None
@@ -234,6 +259,7 @@ def test_stop_app_tree_posix_signals_process_group():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_falls_through_to_kill_on_timeout():
     """If SIGTERM doesn't take, escalate to SIGKILL / proc.kill()."""
     import subprocess as sp
@@ -255,6 +281,7 @@ def test_stop_app_tree_falls_through_to_kill_on_timeout():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_reports_graceful_stop():
     """Exiting within the grace period is the signal the caller uses to decide
     whether a running job got to checkpoint."""
@@ -272,6 +299,7 @@ def test_stop_app_tree_reports_graceful_stop():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_swallows_second_interrupt():
     """A second Ctrl+C while we wait means 'stop now'. It must force-kill here rather
     than escaping to the caller's ``finally``, which would re-signal the tree — TestGen
@@ -311,6 +339,7 @@ def test_stop_app_tree_windows_stop_is_always_forced():
 
 
 @pytest.mark.unit
+@posix_only
 def test_force_kill_sweeps_orphans_outside_the_process_group():
     """``run-app all`` starts its ui/scheduler children in their own sessions, so killpg
     on the parent leaves them holding the port and the data dir — breaking the next
@@ -331,6 +360,7 @@ def test_force_kill_sweeps_orphans_outside_the_process_group():
 
 
 @pytest.mark.unit
+@posix_only
 def test_second_interrupt_still_sweeps_orphans():
     """The second-Ctrl+C path force-kills, so it owes the same cleanup."""
     proc = MagicMock()
@@ -350,6 +380,7 @@ def test_second_interrupt_still_sweeps_orphans():
 
 
 @pytest.mark.unit
+@posix_only
 def test_graceful_stop_does_not_sweep_orphans():
     """A tree that stopped on its own has nothing left behind — don't reach for pkill."""
     proc = MagicMock()
