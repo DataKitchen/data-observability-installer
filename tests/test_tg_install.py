@@ -51,28 +51,26 @@ def test_tg_install(tg_install_action, start_cmd_mock, stdout_mock, tmp_data_fol
     assert Path(tmp_data_folder).joinpath("dk-tg-credentials.txt").stat().st_size > 0
     marker = Path(tmp_data_folder).joinpath("dk-tg-install.json")
     assert marker.exists()
-    import json as _json
-
-    assert _json.loads(marker.read_text())["install_mode"] == "docker"
+    assert json.loads(marker.read_text())["install_mode"] == "docker"
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "stdout_effect",
     (
-        [['[{"Name":"test-project","Status":"running(2)","ConfigFiles":"<COMPOSE>"}]'], []],
-        [[], ['{"Labels":"com.docker.compose.project=test-project,", "Status":"N/A"}']],
+        lambda compose_path: [
+            [json.dumps([{"Name": "test-project", "Status": "running(2)", "ConfigFiles": str(compose_path)}])],
+            [],
+        ],
+        lambda compose_path: [
+            [],
+            [json.dumps({"Labels": "com.docker.compose.project=test-project,", "Status": "N/A"})],
+        ],
     ),
     ids=("container", "volume"),
 )
 def test_tg_existing_install_abort(stdout_effect, tg_install_action, stdout_mock, compose_path):
-    # json.dumps, minus its quotes, to get the path escaped as it appears inside a JSON
-    # string: on Windows it contains backslashes, which are invalid escapes raw, so the
-    # payload would fail to parse and the step would find no existing install.
-    escaped_compose_path = json.dumps(str(compose_path))[1:-1]
-    stdout_mock.side_effect = [
-        [line.replace("<COMPOSE>", escaped_compose_path) for line in output] for output in stdout_effect
-    ]
+    stdout_mock.side_effect = stdout_effect(compose_path)
     compose_path.touch()
 
     with patch.object(tg_install_action, "steps", new=[ComposeVerifyExistingInstallStep]):

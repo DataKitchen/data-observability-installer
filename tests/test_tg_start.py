@@ -1,3 +1,4 @@
+import os
 import signal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,6 +17,14 @@ from tests.installer import (
     InstallMarker,
     TESTGEN_STOP_GRACE_PERIOD,
 )
+
+
+# The POSIX stop path signals a process group, which Windows has no equivalent of --
+# ``supports_graceful_stop`` keeps the installer off that branch there entirely. These are
+# skipped rather than shimmed: synthesizing ``os.killpg``/``signal.SIGKILL`` would also make
+# a future capability-based ``supports_graceful_stop`` report True on Windows and quietly
+# send the Windows tests down the wrong branch.
+posix_only = pytest.mark.skipif(not hasattr(os, "killpg"), reason="needs POSIX process groups")
 
 
 # --- start_testgen_app helper -------------------------------------------------
@@ -230,6 +239,7 @@ def test_stop_app_tree_windows_uses_taskkill_tree():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_posix_signals_process_group():
     proc = MagicMock()
     proc.poll.return_value = None
@@ -249,6 +259,7 @@ def test_stop_app_tree_posix_signals_process_group():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_falls_through_to_kill_on_timeout():
     """If SIGTERM doesn't take, escalate to SIGKILL / proc.kill()."""
     import subprocess as sp
@@ -270,6 +281,7 @@ def test_stop_app_tree_falls_through_to_kill_on_timeout():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_reports_graceful_stop():
     """Exiting within the grace period is the signal the caller uses to decide
     whether a running job got to checkpoint."""
@@ -287,6 +299,7 @@ def test_stop_app_tree_reports_graceful_stop():
 
 
 @pytest.mark.unit
+@posix_only
 def test_stop_app_tree_swallows_second_interrupt():
     """A second Ctrl+C while we wait means 'stop now'. It must force-kill here rather
     than escaping to the caller's ``finally``, which would re-signal the tree — TestGen
@@ -326,6 +339,7 @@ def test_stop_app_tree_windows_stop_is_always_forced():
 
 
 @pytest.mark.unit
+@posix_only
 def test_force_kill_sweeps_orphans_outside_the_process_group():
     """``run-app all`` starts its ui/scheduler children in their own sessions, so killpg
     on the parent leaves them holding the port and the data dir — breaking the next
@@ -346,6 +360,7 @@ def test_force_kill_sweeps_orphans_outside_the_process_group():
 
 
 @pytest.mark.unit
+@posix_only
 def test_second_interrupt_still_sweeps_orphans():
     """The second-Ctrl+C path force-kills, so it owes the same cleanup."""
     proc = MagicMock()
@@ -365,6 +380,7 @@ def test_second_interrupt_still_sweeps_orphans():
 
 
 @pytest.mark.unit
+@posix_only
 def test_graceful_stop_does_not_sweep_orphans():
     """A tree that stopped on its own has nothing left behind — don't reach for pkill."""
     proc = MagicMock()
