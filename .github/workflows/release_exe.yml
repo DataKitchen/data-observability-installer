@@ -9,10 +9,10 @@ on:
   # below is gated on a push to main.
   workflow_dispatch:
 
-# The smoke test makes this job ~25 minutes instead of ~3, so two merges in quick
-# succession can now overlap. Queue them rather than cancelling: the release step deletes
-# the tag before recreating it, and a run cancelled inside that window would leave no
-# release at all.
+# The smoke test adds a real install to this job -- measured at 4m19s end to end, so two
+# merges in quick succession can now overlap. Queue them rather than cancelling: the release
+# step deletes the tag before recreating it, and a run cancelled inside that window would
+# leave no release at all.
 concurrency:
   group: release-windows-build
   cancel-in-progress: false
@@ -20,6 +20,8 @@ concurrency:
 jobs:
   windows-release:
     runs-on: windows-latest
+    # Generous against the measured 4m19s: the install pulls uv, a Python 3.13 and TestGen's
+    # dependency tree, so a bad network day is much slower than a good one.
     timeout-minutes: 45
     defaults:
       run:
