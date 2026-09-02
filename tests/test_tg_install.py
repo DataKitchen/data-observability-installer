@@ -1,3 +1,4 @@
+import json
 from functools import partial
 from pathlib import Path
 from unittest.mock import call, patch
@@ -65,8 +66,12 @@ def test_tg_install(tg_install_action, start_cmd_mock, stdout_mock, tmp_data_fol
     ids=("container", "volume"),
 )
 def test_tg_existing_install_abort(stdout_effect, tg_install_action, stdout_mock, compose_path):
+    # json.dumps, minus its quotes, to get the path escaped as it appears inside a JSON
+    # string: on Windows it contains backslashes, which are invalid escapes raw, so the
+    # payload would fail to parse and the step would find no existing install.
+    escaped_compose_path = json.dumps(str(compose_path))[1:-1]
     stdout_mock.side_effect = [
-        [line.replace("<COMPOSE>", str(compose_path)) for line in output] for output in stdout_effect
+        [line.replace("<COMPOSE>", escaped_compose_path) for line in output] for output in stdout_effect
     ]
     compose_path.touch()
 
