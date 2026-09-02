@@ -45,6 +45,12 @@ PROC_PATTERNS = ("testgen.*run-app", "tools/dataops-testgen")
 
 OUT_DIR = Path("smoke")
 
+# Module level so a unit test can parse them against the installer's own parser. This
+# script runs only on a merge to main, so a rename here (or of a flag it passes) would
+# otherwise surface 25 minutes into a release build.
+INSTALL_ARGS = ("tg", "install", "--pip", "--no-demo")
+DELETE_ARGS = ("tg", "delete")
+
 
 class Report:
     """Collects checks so a run reports every failure, not just the first."""
@@ -275,6 +281,10 @@ def main():
     if not installer.exists():
         sys.exit(f"No installer at {installer}")
 
+    # Opt out of analytics for every child: this is the default source for the top-level
+    # --no-analytics flag, and unlike the flag it cannot be passed in the wrong position.
+    os.environ["DK_INSTALLER_ANALYTICS"] = "no"
+
     OUT_DIR.mkdir(exist_ok=True)
     install_log = OUT_DIR / "install.log"
     report = Report()
@@ -284,7 +294,7 @@ def main():
     step("install (backgrounded: the installer blocks running the app)")
     with install_log.open("w", encoding="utf-8") as log_file:
         proc = subprocess.Popen(
-            [*command, "tg", "install", "--pip", "--no-demo", "--no-analytics"],
+            [*command, *INSTALL_ARGS],
             stdout=log_file,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -313,7 +323,7 @@ def main():
         report.note("nothing survived the kill", "the sweep has nothing to prove in this run")
 
     step("delete")
-    deleted = run([*command, "tg", "delete", "--no-analytics"])
+    deleted = run([*command, *DELETE_ARGS])
     print(deleted.stdout[-3000:], flush=True)
     (OUT_DIR / "delete.log").write_text(deleted.stdout + deleted.stderr, encoding="utf-8")
     report.check(deleted.returncode == 0, "tg delete exited cleanly", f"rc {deleted.returncode}")
