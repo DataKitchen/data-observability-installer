@@ -150,11 +150,16 @@ def standalone_procs():
     """
     if WINDOWS:
         clause = " -or ".join(f"($cmd -match '{p}') -or ($exe -match '{p}')" for p in PROC_PATTERNS)
+        # Spare this query and the driver that spawned it. The patterns appear literally in
+        # the query's own command line, so it matches itself -- the same reason the
+        # installer's sweep spares $PID rather than trusting the match to exclude it.
         script = (
             "$ErrorActionPreference = 'SilentlyContinue'; "
+            f"$spare = @({os.getpid()}) + $PID; "
             "Get-CimInstance Win32_Process | Where-Object { "
             "$cmd = ($_.CommandLine -replace '\\\\', '/'); "
-            "$exe = ($_.ExecutablePath -replace '\\\\', '/'); " + clause + " } | "
+            "$exe = ($_.ExecutablePath -replace '\\\\', '/'); "
+            "$spare -notcontains $_.ProcessId -and (" + clause + ") } | "
             'ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }'
         )
         result = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script])
@@ -163,7 +168,7 @@ def standalone_procs():
         # command line is read per pid with ps, which behaves the same on both.
         found = run(["pgrep", "-f", "|".join(PROC_PATTERNS)])
         lines = []
-        for pid in (p for p in found.stdout.split() if p.strip().isdigit()):
+        for pid in (p for p in found.stdout.split() if p.strip().isdigit() and int(p) != os.getpid()):
             cmdline = run(["ps", "-p", pid, "-o", "command="]).stdout.strip()
             lines.append(f"{pid}|{cmdline}")
         result = subprocess.CompletedProcess(args=(), returncode=0, stdout="\n".join(lines), stderr="")
@@ -214,14 +219,10 @@ def check_running_install(installer, report):
             report.note(f"health endpoint {path}", body.strip()[:40])
             break
 
-    # Reported, not gated. The installer advertises "API & MCP: http://localhost:<port>" in
-    # the credentials it prints, so this should be listening -- but a first run found it
-    # closed, and whether it binds later than the UI or not at all is TestGen's answer to
-    # give. Polling tells the two apart; promote to a check once we know which.
-    if wait_for(lambda: port_open(API_PORT), timeout=60):
-        report.note(f"API port {API_PORT} accepts connections")
-    else:
-        report.note(f"API port {API_PORT} never opened", "installer advertises it in the credentials")
+    # Polled rather than probed once: the API binds a couple of seconds after the UI does,
+    # so a single immediate attempt reports it closed. The installer advertises it as
+    # "API & MCP: http://localhost:<port>" in the credentials, so it has to come up.
+    report.check(wait_for(lambda: port_open(API_PORT), timeout=60), f"API answers on port {API_PORT}")
 
     postmaster = testgen_home() / "pgdata" / "postmaster.pid"
     report.check(postmaster.exists(), "embedded Postgres is running", str(postmaster))
