@@ -1,0 +1,46 @@
+# TEMPORARY -- delete before merging this branch.
+#
+# release_exe.yml runs only on a push to main, and its workflow_dispatch trigger is not
+# usable until that file is on main, so there is no other way to exercise the smoke test
+# from a branch. This runs the same steps, minus everything that publishes.
+name: TEMP exe smoke dry run
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  dry-run:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          cache: 'pip'
+          python-version: "3.9"
+
+      - name: Install project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev,test]
+
+      - name: Build the executable
+        run: pyinstaller --onefile --exclude demo dk-installer.py
+
+      - name: Smoke-test the executable
+        run: python tests/e2e/smoke_exe.py dist/dk-installer.exe
+
+      - name: Upload smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-logs
+          path: smoke/
+          if-no-files-found: ignore
