@@ -55,6 +55,10 @@ def test_start_testgen_app_happy_path(app_action, args_mock, proc_running_then_s
         patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
         patch("tests.installer.subprocess.Popen", return_value=proc_running_then_stops) as popen_mock,
         patch("tests.installer.wait_for_tcp_port", return_value=True) as port_mock,
+        # The ``finally`` cleanup is not this test's subject, and on Windows it shells out
+        # via ``subprocess.run`` -- which goes through the Popen patched right above and
+        # would count as a second app launch.
+        patch("tests.installer.stop_app_tree"),
     ):
         start_testgen_app(app_action, args_mock)
 
@@ -120,6 +124,9 @@ def test_start_testgen_app_handles_keyboard_interrupt(app_action, args_mock, con
         patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
         patch("tests.installer.subprocess.Popen", return_value=proc),
         patch("tests.installer.wait_for_tcp_port", return_value=True),
+        # Pinned: the grace-period messages below are POSIX-only behaviour, and the
+        # Windows counterpart is test_start_testgen_app_makes_no_grace_promise_on_windows.
+        patch("tests.installer.supports_graceful_stop", return_value=True),
         patch("tests.installer.stop_app_tree", return_value=True) as stop_mock,
     ):
         start_testgen_app(app_action, args_mock)
@@ -148,6 +155,8 @@ def test_start_testgen_app_warns_when_grace_period_expires(app_action, args_mock
         patch("tests.installer.resolve_testgen_path", return_value="/bin/testgen"),
         patch("tests.installer.subprocess.Popen", return_value=proc),
         patch("tests.installer.wait_for_tcp_port", return_value=True),
+        # Pinned: Windows never promises a grace period, so it never warns one expired.
+        patch("tests.installer.supports_graceful_stop", return_value=True),
         patch("tests.installer.stop_app_tree", return_value=False),
     ):
         start_testgen_app(app_action, args_mock)
@@ -185,10 +194,16 @@ def test_start_testgen_app_makes_no_grace_promise_on_windows(app_action, args_mo
 
 @pytest.mark.unit
 def test_stop_app_tree_no_op_when_proc_already_exited():
+    """POSIX only. Windows deliberately does not take this shortcut: a console Ctrl+C
+    kills the parent along with the installer, so a dead parent there says nothing about
+    its children -- see test_stop_app_tree_windows_uses_taskkill_tree."""
     proc = MagicMock()
     proc.poll.return_value = 0  # already exited
 
-    with patch("tests.installer.subprocess.run") as run_mock:
+    with (
+        patch("tests.installer.supports_graceful_stop", return_value=True),
+        patch("tests.installer.subprocess.run") as run_mock,
+    ):
         stop_app_tree(proc)
 
     run_mock.assert_not_called()

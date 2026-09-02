@@ -1,4 +1,5 @@
 import json
+import signal
 from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,6 +9,14 @@ from unittest.mock import Mock, patch
 import pytest
 
 from tests.installer import CONSOLE, Action, TESTGEN_DEFAULT_IMAGE
+
+# Windows has no SIGKILL, but the tests that force the POSIX branch of ``stop_app_tree``
+# and ``stop_standalone_orphans`` still reach ``signal.SIGKILL`` through
+# ``os.killpg(..., signal.SIGKILL)``. The value never leaves the process -- every kill on
+# that branch is mocked, and the assertions compare against this same object -- so simply
+# defining it lets the whole suite run on a Windows runner. 9 keeps log output recognizable.
+if not hasattr(signal, "SIGKILL"):
+    signal.SIGKILL = 9
 
 
 @pytest.fixture(autouse=True)
@@ -25,10 +34,13 @@ def _no_real_process_group_signals():
     pgid 1 (init) and ``os.killpg(1, SIGTERM)`` from a root container actually
     signals init → CI runner shutdown. Tests that need to assert on these
     explicitly override the patches inside their own ``with patch(...)``.
+
+    ``create=True`` because neither function exists on Windows: without it this autouse
+    fixture errors out every test in the suite before it starts.
     """
     with (
-        patch("tests.installer.os.killpg") as killpg_mock,
-        patch("tests.installer.os.getpgid", return_value=99999),
+        patch("tests.installer.os.killpg", create=True) as killpg_mock,
+        patch("tests.installer.os.getpgid", return_value=99999, create=True),
     ):
         yield killpg_mock
 
