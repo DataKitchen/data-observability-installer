@@ -343,7 +343,12 @@ def stream_iterator(proc: subprocess.Popen, stream_name: str, file_path: pathlib
         "stdout": (0, "output"),
         "stderr": (1, "stderr"),
     }[stream_name]
-    buffer = io.TextIOWrapper(io.BytesIO())
+    # Explicit utf-8: the default is ``locale.getpreferredencoding()``, which is cp1252 on
+    # US Windows. That mangles every non-ASCII byte a command writes (docker compose and uv
+    # both draw progress with box-drawing and check marks) and, worse, silently defeats the
+    # partial-character handling below -- cp1252 maps almost any byte to *something*, so an
+    # incomplete utf-8 sequence decodes to garbage instead of raising UnicodeDecodeError.
+    buffer = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
 
     def _iter():
         proc_exited = False

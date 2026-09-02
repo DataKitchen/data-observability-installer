@@ -1,3 +1,4 @@
+import platform
 from functools import partial
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -72,7 +73,9 @@ def test_pip_delete_removes_uv_tool_and_home(pip_delete_action, start_cmd_mock, 
 def test_pip_delete_removes_installer_local_uv(pip_delete_action, start_cmd_mock, tmp_data_folder, tmp_path):
     local_bin = Path(tmp_data_folder) / "bin"
     local_bin.mkdir()
-    local_uv = local_bin / "uv"
+    # ``resolve_uv_path`` looks for uv.exe on Windows: create the name this platform's
+    # installer will actually look for, so the test exercises the real branch on both.
+    local_uv = local_bin / ("uv.exe" if platform.system() == "Windows" else "uv")
     local_uv.write_bytes(b"#!/bin/sh\n")
 
     fake_tg_home = tmp_path / ".testgen"

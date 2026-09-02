@@ -1,3 +1,4 @@
+import json
 from functools import partial
 from itertools import count
 from pathlib import Path
@@ -66,7 +67,7 @@ def test_obs_install(obs_install_action, start_cmd_mock, tmp_data_folder, stdout
 @pytest.mark.integration
 def test_obs_existing_install_abort(obs_install_action, compose_path, stdout_mock):
     stdout_mock.side_effect = [
-        [f'[{{"Name":"test-project","Status":"running(4)","ConfigFiles":"{compose_path}"}}]'],
+        [json.dumps([{"Name": "test-project", "Status": "running(4)", "ConfigFiles": str(compose_path)}])],
         [],
     ]
     with patch.object(obs_install_action, "steps", new=[ComposeVerifyExistingInstallStep]):

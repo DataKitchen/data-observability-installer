@@ -1,4 +1,5 @@
 import json
+import os
 from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,7 +26,13 @@ def _no_real_process_group_signals():
     pgid 1 (init) and ``os.killpg(1, SIGTERM)`` from a root container actually
     signals init → CI runner shutdown. Tests that need to assert on these
     explicitly override the patches inside their own ``with patch(...)``.
+
+    Nothing to guard where process groups do not exist: Windows has no ``os.killpg`` to
+    call by accident, and the tests that would reach it are skipped there.
     """
+    if not hasattr(os, "killpg"):
+        yield Mock()
+        return
     with (
         patch("tests.installer.os.killpg") as killpg_mock,
         patch("tests.installer.os.getpgid", return_value=99999),
