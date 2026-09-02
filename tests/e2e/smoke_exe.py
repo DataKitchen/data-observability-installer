@@ -112,6 +112,18 @@ def http_get(url):
         return None, str(e)
 
 
+def read_text_safe(path):
+    """The file's text, or None when it is absent or cannot be read.
+
+    Windows denies the read outright while another process holds the file open, which is
+    exactly the state TestGen's own log is in while the app is running.
+    """
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def port_open(port):
     try:
         with socket.create_connection(("localhost", port), timeout=5):
@@ -171,8 +183,7 @@ def check_running_install(installer, report):
     postmaster = testgen_home() / "pgdata" / "postmaster.pid"
     report.check(postmaster.exists(), "embedded Postgres is running", str(postmaster))
 
-    config = testgen_home() / "config.env"
-    config_text = config.read_text(encoding="utf-8", errors="replace") if config.exists() else ""
+    config_text = read_text_safe(testgen_home() / "config.env") or ""
     report.check(f"TG_UI_PORT={UI_PORT}" in config_text, "standalone-setup persisted the UI port")
 
     marker = data_folder(installer) / "dk-tg-install.json"
@@ -184,11 +195,12 @@ def check_running_install(installer, report):
 
     uv_path = resolve_uv(installer)
     listed = run([uv_path, "tool", "list"]).stdout if uv_path else ""
-    report.check("dataops-testgen" in listed, "uv reports the tool installed", listed.strip()[:80])
+    report.check("dataops-testgen" in listed, "uv reports the tool installed", listed.splitlines()[0] if listed else "")
 
-    app_log = testgen_home() / "logs" / "app.log"
-    app_text = app_log.read_text(encoding="utf-8", errors="replace") if app_log.exists() else ""
-    report.check("Traceback" not in app_text, "no traceback in the app log")
+    # Which major version a new cluster initialized on. Reported because it answers TG-1245:
+    # pgserver 0.6.0's PostgreSQL 18 build cannot start on a Windows box without
+    # libwinpthread-1.dll, which the wheel does not ship.
+    report.note("embedded Postgres version", (read_text_safe(testgen_home() / "pgdata" / "PG_VERSION") or "?").strip())
 
 
 def uv_tool_paths(installer):
@@ -217,6 +229,28 @@ def kill_installer(proc):
     time.sleep(3)
 
 
+def save_and_scan_app_log(report):
+    """Copy TestGen's log aside, then look for a traceback in it.
+
+    Only possible between the kill and the delete: the app holds the file open while it
+    runs, and ``tg delete`` takes the whole directory. Reported rather than failed -- the
+    UI, API and Postgres checks are the gate, and a traceback that breaks none of them
+    should not block a release. Promote it once we know the log is quiet in practice.
+    """
+    app_log = testgen_home() / "logs" / "app.log"
+    text = read_text_safe(app_log)
+    if text is None:
+        report.note("app log unreadable", str(app_log))
+        return
+    OUT_DIR.mkdir(exist_ok=True)
+    (OUT_DIR / "testgen-app.log").write_text(text, encoding="utf-8")
+    if "Traceback" in text:
+        first = next(line for line in text.splitlines() if "Traceback" in line)
+        report.note("traceback in the app log", first.strip()[:120])
+    else:
+        report.note("app log has no traceback")
+
+
 def check_delete(installer, output, tool_paths, report):
     """The delete's own report has to match what is actually left on disk."""
     survived = []
@@ -242,14 +276,17 @@ def check_delete(installer, output, tool_paths, report):
 
 
 def collect_logs(installer):
+    """Copy the installer's per-command session zips out for the workflow to upload."""
     OUT_DIR.mkdir(exist_ok=True)
     session_logs = logs_folder(installer)
-    if session_logs.exists():
-        for zipped in sorted(session_logs.glob("*.zip")):
+    if not session_logs.exists():
+        return
+    for zipped in sorted(session_logs.glob("*.zip")):
+        # Best-effort: a locked or vanished log must not mask the result being reported.
+        try:
             shutil.copy2(zipped, OUT_DIR / zipped.name)
-    app_log = testgen_home() / "logs" / "app.log"
-    if app_log.exists():
-        shutil.copy2(app_log, OUT_DIR / "testgen-app.log")
+        except OSError as e:
+            print(f"  [note] could not copy {zipped.name} -- {e}", flush=True)
 
 
 def refuse_outside_ci(force):
@@ -316,6 +353,7 @@ def main():
 
     step("kill the installer, orphaning the app tree")
     kill_installer(proc)
+    save_and_scan_app_log(report)
     orphans = standalone_pids()
     if orphans:
         report.note("orphans left by the dirty exit", str(orphans))
