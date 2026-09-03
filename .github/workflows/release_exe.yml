@@ -9,10 +9,9 @@ on:
   # below is gated on a push to main.
   workflow_dispatch:
 
-# The smoke test adds a real install to this job -- measured at 4m19s end to end, so two
-# merges in quick succession can now overlap. Queue them rather than cancelling: the release
-# step deletes the tag before recreating it, and a run cancelled inside that window would
-# leave no release at all.
+# The smoke test adds a real install, so two merges in quick succession can overlap. Queue
+# them rather than cancelling: the release step deletes the tag before recreating it, and a
+# run cancelled inside that window would leave no release at all.
 concurrency:
   group: release-windows-build
   cancel-in-progress: false
@@ -20,8 +19,8 @@ concurrency:
 jobs:
   windows-release:
     runs-on: windows-latest
-    # Generous against the measured 4m19s: the install pulls uv, a Python 3.13 and TestGen's
-    # dependency tree, so a bad network day is much slower than a good one.
+    # The install pulls uv, a Python 3.13 and TestGen's dependency tree, so a bad network day
+    # is much slower than a good one.
     timeout-minutes: 45
     defaults:
       run:
@@ -44,10 +43,9 @@ jobs:
       - name: Build the executable
         run: pyinstaller --onefile --exclude demo dk-installer.py
 
-      # Installs TestGen for real in pip mode, checks the app serves, kills the installer
-      # and uninstalls. Deliberately ahead of the release step: the exe is the entry point
-      # most Windows users take, and this is the one place it can still be gated -- a
-      # failure here leaves the previous release in place instead of replacing it.
+      # Installs TestGen for real in pip mode, checks the app serves, kills the installer and
+      # uninstalls. Ahead of the release step so a failure leaves the previous release in
+      # place instead of replacing it with a broken build.
       - name: Smoke-test the executable
         run: python tests/e2e/smoke_exe.py dist/dk-installer.exe
 

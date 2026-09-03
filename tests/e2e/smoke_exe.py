@@ -5,10 +5,10 @@ works too). Exercises the pip (standalone) path end to end: the uv bootstrap, ``
 install``, the embedded Postgres, ``standalone-setup``, and the orphan sweep in ``tg
 delete``. All of that only fails for real -- unit tests reach it through mocks.
 
-The installer is killed rather than interrupted, on purpose. A clean Ctrl+C never reaches
+The installer is killed rather than interrupted. A clean Ctrl+C never reaches
 ``force_kill_app_tree``, so it does not exercise the sweep at all; only an orphaned tree
-makes ``tg delete`` find the processes by command line, which is where the Windows bugs
-were. Delivering a real console Ctrl+C from a CI step is a separate problem, left alone.
+makes ``tg delete`` find the processes by command line. A console Ctrl+C cannot be delivered
+from a CI step anyway.
 
 Readiness is taken from the install marker plus the UI port, never from the installer's
 stdout: redirected to a file that output is block-buffered, so the line announcing the app
@@ -36,25 +36,21 @@ WINDOWS = platform.system() == "Windows"
 
 UI_PORT = 8501
 API_PORT = 8530
-# The install pulls uv, a Python 3.13 and TestGen's whole dependency tree, then runs initdb.
-# 4~8 minutes is what the installer itself promises; allow well past it before calling it a hang.
+# 4~8 minutes is what the installer promises; allow well past it before calling it a hang.
 INSTALL_TIMEOUT = 20 * 60
-# Mirrors STANDALONE_PROC_PATTERNS in dk-installer.py, with separators already normalised.
-# Duplicated rather than imported: the subject here is the built artifact, not the source
-# sitting next to it.
+# Mirrors STANDALONE_PROC_PATTERNS in dk-installer.py, separators already normalised.
+# Duplicated rather than imported: the subject is the built artifact, not the source beside it.
 PROC_PATTERNS = ("testgen.*run-app", "tools/dataops-testgen")
 
 OUT_DIR = Path("smoke")
 
-# Module level so a unit test can parse them against the installer's own parser. This
-# script runs only on a merge to main, so a rename here (or of a flag it passes) would
-# otherwise surface 25 minutes into a release build.
+# Module level so a unit test can parse them against the installer's own parser: this script
+# runs only on a merge to main, so a flag renamed here surfaces during a release build.
 INSTALL_ARGS = ("tg", "install", "--pip", "--no-demo")
 DELETE_ARGS = ("tg", "delete")
 
-
-# The installer prints the generated password once, so the captured stdout carries it. The
-# instance is gone with the runner, but the artifact is downloadable from a public repo.
+# The installer prints the generated password once, so the captured stdout carries it, and
+# artifacts on a public repo are downloadable.
 PASSWORD_RE = re.compile(r"(Password:\s*)(\S+)")
 
 
@@ -181,6 +177,23 @@ def standalone_procs():
     return procs
 
 
+def summarize(procs):
+    """``9 postgres, 13 python, 2 testgen`` -- what is running, without a wall of pids."""
+    kinds = {}
+    for cmdline in procs.values():
+        text = cmdline.strip()
+        if text.startswith('"'):
+            executable = text[1:].split('"', 1)[0]
+        else:
+            executable = text.split(" ", 1)[0]
+        # Separators normalised before splitting: a pathlib basename on a Windows path is
+        # the whole path when this runs on POSIX, which the sweep in dk-installer.py handles
+        # the same way.
+        name = executable.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        kinds[name or "unknown"] = kinds.get(name or "unknown", 0) + 1
+    return ", ".join(f"{count} {name}" for name, count in sorted(kinds.items(), key=lambda kv: -kv[1]))
+
+
 def wait_for(predicate, timeout):
     """Poll until the predicate is true, returning whether it became true in time."""
     deadline = time.time() + timeout
@@ -219,9 +232,8 @@ def check_running_install(installer, report):
             report.note(f"health endpoint {path}", body.strip()[:40])
             break
 
-    # Polled rather than probed once: the API binds a couple of seconds after the UI does,
-    # so a single immediate attempt reports it closed. The installer advertises it as
-    # "API & MCP: http://localhost:<port>" in the credentials, so it has to come up.
+    # Polled: the API binds a couple of seconds after the UI. It has to come up -- the
+    # installer advertises it as "API & MCP: http://localhost:<port>" in the credentials.
     report.check(wait_for(lambda: port_open(API_PORT), timeout=60), f"API answers on port {API_PORT}")
 
     postmaster = testgen_home() / "pgdata" / "postmaster.pid"
@@ -241,9 +253,9 @@ def check_running_install(installer, report):
     listed = run([uv_path, "tool", "list"]).stdout if uv_path else ""
     report.check("dataops-testgen" in listed, "uv reports the tool installed", listed.splitlines()[0] if listed else "")
 
-    # Which major version a new cluster initialized on. Reported because it answers TG-1245:
-    # pgserver 0.6.0's PostgreSQL 18 build cannot start on a Windows box without
-    # libwinpthread-1.dll, which the wheel does not ship.
+    # Which major version a new cluster initialized on (TG-1245): pgserver's PostgreSQL 18
+    # build cannot start without libwinpthread-1.dll, which the wheel does not ship, so a
+    # runner that happens to supply it masks a failure a user would hit.
     report.note("embedded Postgres version", (read_text_safe(testgen_home() / "pgdata" / "PG_VERSION") or "?").strip())
 
 
@@ -276,11 +288,10 @@ def kill_installer(proc):
 def save_and_scan_app_log(report):
     """Copy TestGen's log aside, then look for a traceback in it.
 
-    Best-effort, and on Windows usually unreadable: the app tree we deliberately orphaned is
-    what holds the file open, so killing the installer does not release it, and ``tg delete``
-    then takes the whole directory. Reported rather than failed either way -- the UI and
-    Postgres checks are the gate, and a traceback that breaks neither should not block a
-    release.
+    Best-effort, and on Windows usually unreadable: the orphaned app tree holds the file
+    open, so killing the installer does not release it, and ``tg delete`` then takes the
+    whole directory. Reported rather than failed either way -- the UI and Postgres checks are
+    the gate, and a traceback that breaks neither should not block a release.
     """
     app_log = testgen_home() / "logs" / "app.log"
     text = read_text_safe(app_log)
@@ -317,8 +328,8 @@ def check_delete(installer, output, tool_paths, report):
 
     claimed = "TestGen uninstalled." in output
     if survived:
-        # The bug this guards against: a success message printed while the tool environment
-        # and shim were still on disk, because a live process held them open.
+        # A live process holding the tool environment open makes the uninstall a no-op, and
+        # the message must not outrun what is actually gone.
         report.check(not claimed, "delete did not claim a success it cannot back up")
     else:
         report.check(claimed, "delete reported success")
@@ -384,8 +395,7 @@ def main():
             stdout=log_file,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            # Unbuffered so the log is useful while the run is still going; readiness does
-            # not depend on it either way.
+            # Unbuffered so the log is readable mid-run; readiness does not depend on it.
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
         running = wait_until_running(proc, installer, report)
@@ -408,10 +418,10 @@ def main():
     kill_installer(proc)
     save_and_scan_app_log(report)
     orphans = standalone_procs()
-    if orphans:
-        report.note(f"{len(orphans)} orphans left by the dirty exit", str(sorted(orphans)))
-    else:
-        report.note("nothing survived the kill", "the sweep has nothing to prove in this run")
+    # Orphaning is the point, so an empty tree is a failure: either the app no longer outlives
+    # the installer, or this query cannot see it -- and then "nothing survived the delete"
+    # below would pass for the wrong reason.
+    report.check(bool(orphans), f"the dirty exit orphaned the app tree ({len(orphans)})", summarize(orphans))
 
     step("delete")
     deleted = run([*command, *DELETE_ARGS])
