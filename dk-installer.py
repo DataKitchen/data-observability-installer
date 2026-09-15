@@ -71,6 +71,16 @@ TESTGEN_APP_READY_TIMEOUT = 120
 # the time the process needs to record what stopped, or the scheduler is killed mid-wait and
 # a running job is cut instead of stopping at a checkpoint.
 TESTGEN_STOP_GRACE_PERIOD = 90
+# Container ceilings written into a new Docker install. A limit is protective rather than
+# restrictive: the container that exhausts memory is killed on its own and the rest keeps
+# running, where an unlimited container lets the host run out and the kernel pick any victim,
+# including the database. Sized for the 4 CPU / 16 GB virtual machine the enterprise install
+# guide asks for. They are ceilings rather than reservations, so they overlap deliberately and
+# a smaller machine simply never reaches them.
+TESTGEN_ENGINE_CPU_LIMIT = "3.0"
+TESTGEN_ENGINE_MEMORY_LIMIT = "10G"
+TESTGEN_POSTGRES_CPU_LIMIT = "3.0"
+TESTGEN_POSTGRES_MEMORY_LIMIT = "8G"
 INSTALL_MARKER_FILE = "dk-{}-install.json"
 INSTALL_MODE_DOCKER = "docker"
 INSTALL_MODE_PIP = "pip"
@@ -2396,6 +2406,11 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
                     condition: service_healthy
                 networks:
                   - datakitchen
+                deploy:
+                  resources:
+                    limits:
+                      cpus: "{TESTGEN_ENGINE_CPU_LIMIT}"
+                      memory: {TESTGEN_ENGINE_MEMORY_LIMIT}
 
               postgres:
                 image: postgres:14.1-alpine
@@ -2412,6 +2427,11 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
                   retries: 3
                 networks:
                   - datakitchen
+                deploy:
+                  resources:
+                    limits:
+                      cpus: "{TESTGEN_POSTGRES_CPU_LIMIT}"
+                      memory: {TESTGEN_POSTGRES_MEMORY_LIMIT}
 
             volumes:
               postgres_data:
