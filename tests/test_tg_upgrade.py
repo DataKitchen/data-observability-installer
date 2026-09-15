@@ -276,6 +276,27 @@ def test_tg_upgrade_adds_stop_grace_period(
 
 
 @pytest.mark.integration
+def test_tg_upgrade_does_not_add_resource_limits(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """Limits are for new installs. Imposing a ceiling on a running install could start killing
+    work that fits the machine it was sized for."""
+    args_mock.skip_verify = True
+    set_version_check_mock(version_check_mock, "1.1.0")
+    compose_path.write_text(get_compose_content("TG_INSTANCE_ID: test-instance-id"))
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "deploy:" not in compose_content
+    assert "limits:" not in compose_content
+
+
 def test_tg_upgrade_preserves_existing_stop_grace_period(
     tg_upgrade_action,
     compose_path,
