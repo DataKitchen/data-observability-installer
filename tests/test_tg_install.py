@@ -12,6 +12,10 @@ from tests.installer import (
     AbortAction,
     TestGenCreateDockerComposeFileStep,
     ComposeVerifyExistingInstallStep,
+    TESTGEN_ENGINE_CPU_LIMIT,
+    TESTGEN_ENGINE_MEMORY_LIMIT,
+    TESTGEN_POSTGRES_CPU_LIMIT,
+    TESTGEN_POSTGRES_MEMORY_LIMIT,
     TESTGEN_STOP_GRACE_PERIOD,
 )
 
@@ -182,6 +186,22 @@ def test_tg_compose_metadata_db_creds_match_bootstrap_user(
 
     assert f"TG_METADATA_DB_USER: {username}" in contents
     assert f"TG_METADATA_DB_PASSWORD: {password}" in contents
+
+
+@pytest.mark.integration
+def test_tg_compose_sets_resource_limits(tg_install_action, start_cmd_mock, stdout_mock, compose_path):
+    """An unlimited container lets the host run out of memory and the kernel pick any victim.
+    A ceiling per service keeps a run that exhausts memory to the container it started in."""
+    tg_install_action.execute()
+    compose_content = compose_path.read_text()
+
+    assert f'cpus: "{TESTGEN_ENGINE_CPU_LIMIT}"' in compose_content
+    assert f"memory: {TESTGEN_ENGINE_MEMORY_LIMIT}" in compose_content
+    assert f'cpus: "{TESTGEN_POSTGRES_CPU_LIMIT}"' in compose_content
+    assert f"memory: {TESTGEN_POSTGRES_MEMORY_LIMIT}" in compose_content
+    # Both services, and neither twice.
+    assert compose_content.count("deploy:") == 2
+    assert compose_content.count("limits:") == 2
 
 
 @pytest.mark.integration
