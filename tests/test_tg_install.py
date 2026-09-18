@@ -1,4 +1,5 @@
 import json
+import re
 from functools import partial
 from pathlib import Path
 from unittest.mock import call, patch
@@ -134,6 +135,24 @@ def test_tg_compose_sets_engine_stop_grace_period(tg_install_action, start_cmd_m
     assert grace_idx == image_idx + 3
     indent = lines[image_idx][: -len(lines[image_idx].lstrip())]
     assert lines[grace_idx] == f"{indent}stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s"
+
+
+@pytest.mark.integration
+def test_tg_compose_metadata_db_creds_match_bootstrap_user(
+    tg_install_action, start_cmd_mock, stdout_mock, compose_path
+):
+    """TG_METADATA_DB_USER/PASSWORD replaces an implicit app-side fallback to
+    TESTGEN_USERNAME/PASSWORD — no new Postgres role is created, so both pairs must carry
+    the same bootstrap credentials."""
+    tg_install_action.execute()
+    contents = compose_path.read_text()
+
+    username_match = re.search(r"TESTGEN_USERNAME: (\S+)", contents)
+    password_match = re.search(r"TESTGEN_PASSWORD: (\S+)", contents)
+    username, password = username_match.group(1), password_match.group(1)
+
+    assert f"TG_METADATA_DB_USER: {username}" in contents
+    assert f"TG_METADATA_DB_PASSWORD: {password}" in contents
 
 
 @pytest.mark.integration
