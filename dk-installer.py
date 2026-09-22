@@ -2125,6 +2125,24 @@ def find_in_block(contents: str, block: str, key: str) -> typing.Optional[re.Mat
     return re.compile(rf"^([ \t]+){re.escape(key)}:.*$", flags=re.M).search(contents, header.end(), end)
 
 
+def get_testgen_credentials_from_compose(contents: str) -> tuple[typing.Optional[str], typing.Optional[str]]:
+    """Read the bootstrap ``TESTGEN_USERNAME``/``PASSWORD`` out of a compose file's text.
+
+    That pair is the one Postgres account every generated TestGen compose file has always
+    had; ``TG_METADATA_DB_USER/PASSWORD`` is written as a copy of it, never generated fresh.
+    """
+    username = None
+    password = None
+    for line in contents.split("\n"):
+        if line.strip().startswith("TESTGEN_USERNAME:"):
+            username = line.replace("TESTGEN_USERNAME:", "").strip()
+        if line.strip().startswith("TESTGEN_PASSWORD:"):
+            password = line.replace("TESTGEN_PASSWORD:", "").strip()
+        if username and password:
+            break
+    return username, password
+
+
 class UpdateComposeFileStep(Step):
     label = "Updating the Docker compose file"
 
@@ -2135,6 +2153,8 @@ class UpdateComposeFileStep(Step):
         self.update_base_url = False
         self.update_api_port = False
         self.update_stop_grace = False
+        self.update_metadata_creds = False
+        self._missing_metadata_creds_keys = []
         super().__init__()
 
     def pre_execute(self, action, args):
@@ -2207,6 +2227,24 @@ class UpdateComposeFileStep(Step):
             engine_image is not None and find_in_block(contents, "engine", "stop_grace_period") is None
         )
 
+        # TG_METADATA_DB_USER/PASSWORD replaces an implicit app-side fallback to
+        # TESTGEN_USERNAME/PASSWORD, with no fallback of its own. Track each half
+        # independently so a file missing only one of the two still gets repaired,
+        # without re-inserting (and duplicating) the half that's already there.
+        self._missing_metadata_creds_keys = [
+            key for key in ("TG_METADATA_DB_USER", "TG_METADATA_DB_PASSWORD") if key not in contents
+        ]
+        self.update_metadata_creds = bool(self._missing_metadata_creds_keys)
+        if self.update_metadata_creds:
+            username, password = get_testgen_credentials_from_compose(contents)
+            anchor_exists = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M) is not None
+            if not all([username, password]) or not anchor_exists:
+                CONSOLE.msg(
+                    "Unable to determine TESTGEN_USERNAME/PASSWORD from the existing compose file "
+                    f"[{action.get_compose_file_path(args).absolute()}] to set TG_METADATA_DB_USER/PASSWORD."
+                )
+                raise AbortAction
+
         if not any(
             (
                 self.update_version,
@@ -2215,6 +2253,7 @@ class UpdateComposeFileStep(Step):
                 self.update_base_url,
                 self.update_api_port,
                 self.update_stop_grace,
+                self.update_metadata_creds,
             )
         ):
             CONSOLE.msg("No changes will be applied.")
@@ -2229,6 +2268,7 @@ class UpdateComposeFileStep(Step):
                 self.update_base_url,
                 self.update_api_port,
                 self.update_stop_grace,
+                self.update_metadata_creds,
             )
         ):
             raise SkipStep
@@ -2258,6 +2298,13 @@ class UpdateComposeFileStep(Step):
         if self.update_token:
             match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
             var = f"\n{match.group(1)}TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}"
+            contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+
+        if self.update_metadata_creds:
+            username, password = get_testgen_credentials_from_compose(contents)
+            values = {"TG_METADATA_DB_USER": username, "TG_METADATA_DB_PASSWORD": password}
+            match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
+            var = "".join(f"\n{match.group(1)}{key}: {values[key]}" for key in self._missing_metadata_creds_keys)
             contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
 
         if self.update_base_url:
@@ -2292,7 +2339,7 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
     def pre_execute(self, action, args):
         super().pre_execute(action, args)
         if action.ctx.get("using_existing"):
-            self.username, self.password = self.get_credentials_from_compose_file(
+            self.username, self.password = get_testgen_credentials_from_compose(
                 action.get_compose_file_path(args).read_text()
             )
         else:
@@ -2320,18 +2367,6 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
             console_tee(f"Password: {self.password}", skip_logging=True)
 
         CONSOLE.msg(f"(Credentials also written to {simplify_path(cred_file_path)})")
-
-    def get_credentials_from_compose_file(self, file_contents):
-        username = None
-        password = None
-        for line in file_contents.split("\n"):
-            if line.strip().startswith("TESTGEN_USERNAME:"):
-                username = line.replace("TESTGEN_USERNAME:", "").strip()
-            if line.strip().startswith("TESTGEN_PASSWORD:"):
-                password = line.replace("TESTGEN_PASSWORD:", "").strip()
-            if username and password:
-                break
-        return username, password
 
     def get_compose_file_contents(self, action, args):
         action.analytics.additional_properties["used_custom_cert"] = bool(args.ssl_cert_file and args.ssl_key_file)
@@ -2368,6 +2403,8 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
               TG_DECRYPT_PASSWORD: {generate_password()}
               TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), "ascii")}
               TG_METADATA_DB_HOST: postgres
+              TG_METADATA_DB_USER: {self.username}
+              TG_METADATA_DB_PASSWORD: {self.password}
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
               TG_INSTANCE_ID: {action.analytics.get_instance_id()}

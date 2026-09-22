@@ -12,6 +12,7 @@ from tests.installer import (
     TESTGEN_STOP_GRACE_PERIOD,
     TestgenUpgradeAction,
     find_in_block,
+    get_testgen_credentials_from_compose,
     InstallMarker,
 )
 
@@ -145,7 +146,11 @@ def test_tg_upgrade_abort(
     args_mock.skip_verify = False
     set_version_check_mock(version_check_mock, "1.0.0")
     initial_compose_content = get_compose_content(
-        "TG_INSTANCE_ID: test-instance-id", "TG_UI_BASE_URL: http://localhost:8501", stop_grace=True
+        "TG_INSTANCE_ID: test-instance-id",
+        "TG_UI_BASE_URL: http://localhost:8501",
+        "TG_METADATA_DB_USER: admin",
+        "TG_METADATA_DB_PASSWORD: WOzviKBQJS50",
+        stop_grace=True,
     )
     compose_path.write_text(initial_compose_content)
 
@@ -247,6 +252,117 @@ def test_tg_upgrade_preserves_existing_base_url(
     compose_content = compose_path.read_text()
     assert "TG_UI_BASE_URL: https://custom.example.com" in compose_content
     assert compose_content.count("TG_UI_BASE_URL") == 1
+
+
+@pytest.mark.integration
+def test_tg_upgrade_adds_metadata_db_creds(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """Existing installs never had TG_METADATA_DB_USER/PASSWORD — the upgrade backfills it
+    from the bootstrap TESTGEN_USERNAME/PASSWORD already in the file, since no new Postgres
+    role is created."""
+    set_version_check_mock(version_check_mock, "1.0.0")
+    compose_path.write_text(get_compose_content("TG_INSTANCE_ID: test-instance-id"))
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "TG_METADATA_DB_USER: admin" in compose_content
+    assert "TG_METADATA_DB_PASSWORD: WOzviKBQJS50" in compose_content
+
+
+@pytest.mark.integration
+def test_tg_upgrade_backfills_only_the_missing_metadata_db_half(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """A file that already has TG_METADATA_DB_USER (e.g. from a prior backfill) but is
+    missing TG_METADATA_DB_PASSWORD must get only the password added — re-inserting the
+    user too would duplicate the key."""
+    set_version_check_mock(version_check_mock, "1.0.0")
+    compose_path.write_text(get_compose_content("TG_INSTANCE_ID: test-instance-id", "TG_METADATA_DB_USER: admin"))
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "TG_METADATA_DB_PASSWORD: WOzviKBQJS50" in compose_content
+    assert compose_content.count("TG_METADATA_DB_USER") == 1
+
+
+@pytest.mark.integration
+def test_tg_upgrade_aborts_when_bootstrap_creds_unavailable(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    args_mock,
+    console_msg_mock,
+):
+    """TESTGEN_USERNAME/PASSWORD missing or hand-edited out of the file means there's
+    nothing to backfill TG_METADATA_DB_USER/PASSWORD from — abort rather than writing
+    literal 'None' values into a var the app now requires with no fallback."""
+    args_mock.skip_verify = True
+    initial_compose_content = textwrap.dedent("""
+        name: testgen
+
+        x-common-variables: &common-variables
+          TG_DECRYPT_SALT: zyIJQsuBImx5
+          TG_DECRYPT_PASSWORD: cAEGUVRwxvVg
+          TG_JWT_HASHING_KEY: VGVzdEdlbgo=
+          TG_METADATA_DB_HOST: postgres
+          TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
+          TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
+          TG_INSTANCE_ID: test-instance-id
+          TG_UI_BASE_URL: http://localhost:8501
+
+        services:
+          engine:
+            image: datakitchen/dataops-testgen:v2.14.5
+            stop_grace_period: 90s
+    """)
+    compose_path.write_text(initial_compose_content)
+
+    with pytest.raises(AbortAction):
+        tg_upgrade_action.execute(args_mock)
+
+    console_msg_mock.assert_any_msg_contains("Unable to determine TESTGEN_USERNAME/PASSWORD")
+    assert compose_path.read_text() == initial_compose_content
+    start_cmd_mock.assert_not_called()
+
+
+@pytest.mark.integration
+def test_tg_upgrade_preserves_existing_metadata_db_creds(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    args_mock.skip_verify = True
+    set_version_check_mock(version_check_mock, "1.1.0")
+    compose_path.write_text(
+        get_compose_content(
+            "TG_INSTANCE_ID: test-instance-id",
+            "TG_UI_BASE_URL: https://custom.example.com",
+            "TG_METADATA_DB_USER: custom-user",
+            "TG_METADATA_DB_PASSWORD: custom-pass",
+        )
+    )
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "TG_METADATA_DB_USER: custom-user" in compose_content
+    assert compose_content.count("TG_METADATA_DB_USER") == 1
 
 
 @pytest.mark.integration
@@ -402,3 +518,17 @@ def test_find_in_block_offsets_are_absolute():
     match = find_in_block(COMPOSE_TWO_SERVICES, "postgres", "image")
     assert COMPOSE_TWO_SERVICES[match.start() : match.end()] == "    image: postgres:14.1-alpine"
     assert match.group(1) == "    "
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "contents, expected",
+    (
+        ("TESTGEN_USERNAME: admin\nTESTGEN_PASSWORD: secret\n", ("admin", "secret")),
+        ("  TESTGEN_USERNAME: admin\n  TESTGEN_PASSWORD: secret\n", ("admin", "secret")),
+        ("TESTGEN_PASSWORD: secret\n", (None, "secret")),
+        ("", (None, None)),
+    ),
+)
+def test_get_testgen_credentials_from_compose(contents, expected):
+    assert get_testgen_credentials_from_compose(contents) == expected
