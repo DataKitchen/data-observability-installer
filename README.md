@@ -95,7 +95,7 @@ With no flag, the installer probes Docker, shows which prerequisites are met, an
 * **pip mode** — downloads `uv` (if not already on your PATH), uses it to install Python 3.13 (if needed) and TestGen in an isolated environment. Typically takes 4-8 minutes.
 * **Docker mode** — deploys TestGen as a Docker Compose application. Typically takes 5-10 minutes.
 
-On completion, the installer writes credentials to `dk-tg-credentials.txt`, generates demo data, and opens the TestGen UI in your default browser. Use `--no-demo` to skip demo generation. `--port` sets the UI port (default 8501); `--api-port` sets the API/MCP port (default 8530); `--ssl-cert-file` / `--ssl-key-file` enable HTTPS.
+On completion, the installer writes credentials to `dk-tg-credentials.txt`, generates demo data, and opens the TestGen UI in your default browser. Use `--no-demo` to skip demo generation. `--port` sets the UI port (default 8501); `--api-port` sets the API/MCP port (default 8530); `--host` sets the host name or IP address used in the UI and API/MCP URLs (default localhost, Docker mode only); `--ssl-cert-file` / `--ssl-key-file` enable HTTPS.
 
 Either install mode can later be upgraded with `python3 dk-installer.py tg upgrade` and restarted with `python3 dk-installer.py tg start` — the installer detects which flavor is present and routes accordingly.
 

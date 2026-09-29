@@ -109,6 +109,35 @@ def test_tg_compose_contains_base_url(tg_install_action, start_cmd_mock, stdout_
     tg_install_action.execute()
     contents = compose_path.read_text()
     assert "TG_UI_BASE_URL: http://localhost:8501" in contents
+    assert "TG_BASE_URL: http://localhost:8530" in contents
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("host", ("tg.example.com", "10.0.0.5", "[fd00::5]"))
+def test_tg_compose_base_url_custom_host(
+    host, tg_install_action, start_cmd_mock, stdout_mock, args_mock, tmp_data_folder, compose_path
+):
+    args_mock.host = host
+    tg_install_action.execute()
+    contents = compose_path.read_text()
+    assert f"TG_UI_BASE_URL: http://{host}:8501" in contents
+    assert f"TG_BASE_URL: http://{host}:8530" in contents
+
+    credentials = Path(tmp_data_folder).joinpath("dk-tg-credentials.txt").read_text()
+    assert f"User Interface: http://{host}:8501" in credentials
+    assert f"API & MCP:      http://{host}:8530" in credentials
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("host", ("https://tg.example.com", "tg.example.com:8501", "tg.example.com/testgen", ""))
+def test_tg_create_compose_file_abort_host(host, tg_install_action, stdout_mock, args_mock, console_msg_mock):
+    args_mock.host = host
+
+    with patch.object(tg_install_action, "steps", new=[TestGenCreateDockerComposeFileStep]):
+        with pytest.raises(AbortAction):
+            tg_install_action.execute()
+
+    console_msg_mock.assert_any_msg_contains("--host takes a host name or IP address")
 
 
 @pytest.mark.integration
@@ -162,6 +191,7 @@ def test_tg_compose_base_url_ssl(tg_install_action, start_cmd_mock, stdout_mock,
     tg_install_action.execute()
     contents = compose_path.read_text()
     assert "TG_UI_BASE_URL: https://localhost:8501" in contents
+    assert "TG_BASE_URL: https://localhost:8530" in contents
 
 
 @pytest.mark.integration

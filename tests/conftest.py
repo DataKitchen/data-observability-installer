@@ -223,6 +223,7 @@ def args_mock():
     ns.ssl_key_file = None
     ns.ssl_cert_file = None
     ns.image = TESTGEN_DEFAULT_IMAGE
+    ns.host = "localhost"
     ns.obs_export = False
     ns.install_mode = None
     ns.generate_demo = True

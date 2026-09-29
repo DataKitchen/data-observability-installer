@@ -59,6 +59,9 @@ TESTGEN_PULL_TIMEOUT = 5
 TESTGEN_PULL_RETRIES = 3
 TESTGEN_DEFAULT_PORT = 8501
 TESTGEN_DEFAULT_API_PORT = 8530
+TESTGEN_DEFAULT_HOST = "localhost"
+# A host name, an IPv4 address, or a bracketed IPv6 address
+TESTGEN_HOST_PATTERN = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]")
 TESTGEN_LATEST_VERSIONS_URL = (
     "https://dk-support-external.s3.us-east-1.amazonaws.com/testgen-observability/testgen-latest-versions.json"
 )
@@ -146,9 +149,9 @@ TESTGEN_PIP_VERSION_RE = re.compile(rf"^{re.escape(TESTGEN_PIP_PACKAGE)}\s+v(\S+
 #
 
 
-def get_tg_url(args, port):
+def get_tg_url(args, port, host):
     protocol = "https" if args.ssl_cert_file and args.ssl_key_file else "http"
-    return f"{protocol}://localhost:{port}"
+    return f"{protocol}://{host}:{port}"
 
 
 def open_app_in_browser(url: str) -> None:
@@ -2356,12 +2359,16 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
             CONSOLE.msg("Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.")
             raise AbortAction
 
+        if not TESTGEN_HOST_PATTERN.fullmatch(args.host):
+            CONSOLE.msg("--host takes a host name or IP address, without a scheme, port, or path.")
+            raise AbortAction
+
     def on_action_success(self, action, args):
         super().on_action_success(action, args)
         cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
         with CONSOLE.tee(cred_file_path) as console_tee:
-            console_tee(f"User Interface: {get_tg_url(args, args.port)}")
-            console_tee(f"API & MCP:      {get_tg_url(args, args.api_port)}")
+            console_tee(f"User Interface: {get_tg_url(args, args.port, args.host)}")
+            console_tee(f"API & MCP:      {get_tg_url(args, args.api_port, args.host)}")
             console_tee("")
             console_tee(f"Username: {self.username}")
             console_tee(f"Password: {self.password}", skip_logging=True)
@@ -2371,6 +2378,7 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
     def get_compose_file_contents(self, action, args):
         action.analytics.additional_properties["used_custom_cert"] = bool(args.ssl_cert_file and args.ssl_key_file)
         action.analytics.additional_properties["used_custom_image"] = args.image != TESTGEN_DEFAULT_IMAGE
+        action.analytics.additional_properties["used_custom_host"] = args.host != TESTGEN_DEFAULT_HOST
 
         ssl_variables = (
             """
@@ -2409,7 +2417,8 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
               TG_INSTANCE_ID: {action.analytics.get_instance_id()}
               TG_ANALYTICS: {"yes" if args.send_analytics_data else "no"}
-              TG_UI_BASE_URL: {get_tg_url(args, args.port)}
+              TG_UI_BASE_URL: {get_tg_url(args, args.port, args.host)}
+              TG_BASE_URL: {get_tg_url(args, args.api_port, args.host)}
               {ssl_variables}
 
             services:
@@ -3074,8 +3083,8 @@ class TestgenStandaloneSetupStep(Step):
         cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
         log_path = simplify_path(TESTGEN_LOG_FILE_PATH)
         with CONSOLE.tee(cred_file_path) as console_tee:
-            console_tee(f"User Interface: {get_tg_url(args, args.port)}")
-            console_tee(f"API & MCP:      {get_tg_url(args, args.api_port)}")
+            console_tee(f"User Interface: {get_tg_url(args, args.port, TESTGEN_DEFAULT_HOST)}")
+            console_tee(f"API & MCP:      {get_tg_url(args, args.api_port, TESTGEN_DEFAULT_HOST)}")
             console_tee(f"Logs:           {log_path}")
             console_tee("")
             console_tee(f"Username: {self.username}")
@@ -3201,6 +3210,16 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
             help="(Docker mode only) TestGen image to use for the install. Defaults to %(default)s",
         )
         parser.add_argument(
+            "--host",
+            dest="host",
+            action="store",
+            default=TESTGEN_DEFAULT_HOST,
+            help=(
+                "(Docker mode only) Host name or IP address that users and AI clients use to reach TestGen. "
+                "Defaults to %(default)s"
+            ),
+        )
+        parser.add_argument(
             "--pull-timeout",
             type=int,
             action="store",
@@ -3304,7 +3323,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         if self._resolved_mode == INSTALL_MODE_PIP:
             start_testgen_app(self, args)
         else:
-            open_app_in_browser(get_tg_url(args, args.port))
+            open_app_in_browser(get_tg_url(args, args.port, args.host))
 
 
 class TestgenStandaloneUpgradeStep(Step):
