@@ -95,6 +95,80 @@ def test_tg_create_compose_file_abort_password(tg_install_action, stdout_mock, c
 
 
 @pytest.mark.integration
+def test_tg_install_backfills_metadata_creds_into_existing_file(tg_install_action, stdout_mock, compose_path):
+    """A compose file kept across `tg delete --keep-config` can predate TG_METADATA_DB_USER/
+    PASSWORD entirely — `tg install` reusing it must backfill from the actual Postgres
+    account, not just leave the file as-is."""
+    compose_path.write_text(
+        "x-common-variables: &common-variables\n"
+        "  TESTGEN_USERNAME: admin\n"
+        "  TESTGEN_PASSWORD: ui-password\n"
+        "  TG_METADATA_DB_HOST: postgres\n"
+        "\n"
+        "services:\n"
+        "  postgres:\n"
+        "    environment:\n"
+        "      - POSTGRES_USER=testgen\n"
+        "      - POSTGRES_PASSWORD=db-password\n"
+    )
+
+    with patch.object(tg_install_action, "steps", new=[TestGenCreateDockerComposeFileStep]):
+        tg_install_action.execute()
+
+    contents = compose_path.read_text()
+    assert "TG_METADATA_DB_USER: testgen" in contents
+    assert "TG_METADATA_DB_PASSWORD: db-password" in contents
+
+
+@pytest.mark.integration
+def test_tg_install_preserves_existing_metadata_creds(tg_install_action, stdout_mock, compose_path):
+    """A compose file that already has TG_METADATA_DB_USER/PASSWORD must be left exactly as
+    it is — no re-backfill, no touching the file at all."""
+    original_content = (
+        "x-common-variables: &common-variables\n"
+        "  TESTGEN_USERNAME: admin\n"
+        "  TESTGEN_PASSWORD: ui-password\n"
+        "  TG_METADATA_DB_HOST: postgres\n"
+        "  TG_METADATA_DB_USER: testgen\n"
+        "  TG_METADATA_DB_PASSWORD: db-password\n"
+        "\n"
+        "services:\n"
+        "  postgres:\n"
+        "    environment:\n"
+        "      - POSTGRES_USER=testgen\n"
+        "      - POSTGRES_PASSWORD=db-password\n"
+    )
+    compose_path.write_text(original_content)
+
+    with patch.object(tg_install_action, "steps", new=[TestGenCreateDockerComposeFileStep]):
+        tg_install_action.execute()
+
+    assert compose_path.read_text() == original_content
+
+
+@pytest.mark.integration
+def test_tg_install_aborts_when_postgres_creds_unavailable_for_backfill(
+    tg_install_action, stdout_mock, compose_path, console_msg_mock
+):
+    """An existing file missing TG_METADATA_DB_USER/PASSWORD with no postgres service to
+    recover them from must abort rather than leave the app unconfigured."""
+    initial_content = (
+        "x-common-variables: &common-variables\n"
+        "  TESTGEN_USERNAME: admin\n"
+        "  TESTGEN_PASSWORD: ui-password\n"
+        "  TG_METADATA_DB_HOST: postgres\n"
+    )
+    compose_path.write_text(initial_content)
+
+    with patch.object(tg_install_action, "steps", new=[TestGenCreateDockerComposeFileStep]):
+        with pytest.raises(AbortAction):
+            tg_install_action.execute()
+
+    console_msg_mock.assert_any_msg_contains("Unable to determine POSTGRES_USER/PASSWORD")
+    assert compose_path.read_text() == initial_content
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("arg_to_set", ("ssl_cert_file", "ssl_key_file"))
 def test_tg_create_compose_file_abort_args(arg_to_set, tg_install_action, stdout_mock, args_mock, console_msg_mock):
     setattr(args_mock, arg_to_set, "/some/file/path")

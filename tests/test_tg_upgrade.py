@@ -12,6 +12,7 @@ from tests.installer import (
     TESTGEN_STOP_GRACE_PERIOD,
     TestgenUpgradeAction,
     find_in_block,
+    get_postgres_credentials_from_compose,
     get_testgen_credentials_from_compose,
     InstallMarker,
 )
@@ -48,11 +49,14 @@ def tg_upgrade_stdout_side_effect(stdout_mock):
     yield side_effect
 
 
-def get_compose_content(*extra_vars, stop_grace=False):
+def get_compose_content(*extra_vars, stop_grace=False, postgres_user="admin", postgres_password="WOzviKBQJS50"):
     """A compose file as an older installer would have written it.
 
     ``stop_grace`` opts into the engine grace period, i.e. a file already current
     in that respect — leave it off to model the installs the upgrade has to patch.
+
+    ``postgres_user``/``postgres_password`` default to the UI login's values (an old-style
+    install); pass different values to model an independent metadata-DB account.
     """
     template = textwrap.dedent("""
         name: testgen
@@ -66,16 +70,26 @@ def get_compose_content(*extra_vars, stop_grace=False):
           TG_METADATA_DB_HOST: postgres
           TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
           TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
-        {}
+        {extra}
 
         services:
           engine:
             image: datakitchen/dataops-testgen:v2.14.5
-        {}
+        {grace}
+          postgres:
+            image: postgres:14.1-alpine
+            environment:
+              - POSTGRES_USER={postgres_user}
+              - POSTGRES_PASSWORD={postgres_password}
     """)
 
     grace = f"    stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s\n" if stop_grace else ""
-    return template.format(textwrap.indent("\n".join(extra_vars), "  "), grace)
+    return template.format(
+        extra=textwrap.indent("\n".join(extra_vars), "  "),
+        grace=grace,
+        postgres_user=postgres_user,
+        postgres_password=postgres_password,
+    )
 
 
 def set_version_check_mock(version_check_mock, latest_version):
@@ -264,8 +278,9 @@ def test_tg_upgrade_adds_metadata_db_creds(
     version_check_mock,
 ):
     """Existing installs never had TG_METADATA_DB_USER/PASSWORD — the upgrade backfills it
-    from the bootstrap TESTGEN_USERNAME/PASSWORD already in the file, since no new Postgres
-    role is created."""
+    from the actual Postgres account (POSTGRES_USER/PASSWORD) already in the file. On an
+    install from before the metadata-DB account could be independent, that equals the UI
+    login."""
     set_version_check_mock(version_check_mock, "1.0.0")
     compose_path.write_text(get_compose_content("TG_INSTANCE_ID: test-instance-id"))
 
@@ -274,6 +289,36 @@ def test_tg_upgrade_adds_metadata_db_creds(
     compose_content = compose_path.read_text()
     assert "TG_METADATA_DB_USER: admin" in compose_content
     assert "TG_METADATA_DB_PASSWORD: WOzviKBQJS50" in compose_content
+
+
+@pytest.mark.integration
+def test_tg_upgrade_backfills_from_postgres_account_not_ui_login(
+    tg_upgrade_action,
+    compose_path,
+    start_cmd_mock,
+    tg_upgrade_stdout_side_effect,
+    args_mock,
+    version_check_mock,
+):
+    """An install that bootstrapped an independent metadata-DB account has POSTGRES_USER/
+    PASSWORD different from TESTGEN_USERNAME/PASSWORD — if one of TG_METADATA_DB_USER/
+    PASSWORD gets lost, the backfill must recover the actual Postgres account, not the UI
+    login (which can't log in to that volume at all)."""
+    set_version_check_mock(version_check_mock, "1.0.0")
+    compose_path.write_text(
+        get_compose_content(
+            "TG_INSTANCE_ID: test-instance-id",
+            postgres_user="testgen",
+            postgres_password="db-only-password",
+        )
+    )
+
+    tg_upgrade_action.execute(args_mock)
+
+    compose_content = compose_path.read_text()
+    assert "TG_METADATA_DB_USER: testgen" in compose_content
+    assert "TG_METADATA_DB_PASSWORD: db-only-password" in compose_content
+    assert "TG_METADATA_DB_USER: admin" not in compose_content
 
 
 @pytest.mark.integration
@@ -299,16 +344,16 @@ def test_tg_upgrade_backfills_only_the_missing_metadata_db_half(
 
 
 @pytest.mark.integration
-def test_tg_upgrade_aborts_when_bootstrap_creds_unavailable(
+def test_tg_upgrade_aborts_when_postgres_creds_unavailable(
     tg_upgrade_action,
     compose_path,
     start_cmd_mock,
     args_mock,
     console_msg_mock,
 ):
-    """TESTGEN_USERNAME/PASSWORD missing or hand-edited out of the file means there's
-    nothing to backfill TG_METADATA_DB_USER/PASSWORD from — abort rather than writing
-    literal 'None' values into a var the app now requires with no fallback."""
+    """POSTGRES_USER/PASSWORD missing or hand-edited out of the file (no postgres service at
+    all, here) means there's nothing to backfill TG_METADATA_DB_USER/PASSWORD from — abort
+    rather than writing literal 'None' values."""
     args_mock.skip_verify = True
     initial_compose_content = textwrap.dedent("""
         name: testgen
@@ -333,7 +378,7 @@ def test_tg_upgrade_aborts_when_bootstrap_creds_unavailable(
     with pytest.raises(AbortAction):
         tg_upgrade_action.execute(args_mock)
 
-    console_msg_mock.assert_any_msg_contains("Unable to determine TESTGEN_USERNAME/PASSWORD")
+    console_msg_mock.assert_any_msg_contains("Unable to determine POSTGRES_USER/PASSWORD")
     assert compose_path.read_text() == initial_compose_content
     start_cmd_mock.assert_not_called()
 
@@ -461,7 +506,7 @@ def test_tg_upgrade_adds_stop_grace_period_to_custom_image(
 
     compose_content = compose_path.read_text()
     lines = compose_content.splitlines()
-    image_idx = next(i for i, line in enumerate(lines) if "image:" in line)
+    image_idx = next(i for i, line in enumerate(lines) if "registry.internal.example.com" in line)
     grace_idx = next(i for i, line in enumerate(lines) if "stop_grace_period" in line)
     assert grace_idx == image_idx + 3
     assert lines[grace_idx].strip() == f"stop_grace_period: {TESTGEN_STOP_GRACE_PERIOD}s"
@@ -484,8 +529,10 @@ def test_tg_upgrade_ignores_stop_grace_period_on_another_service(
         # The stray comment matters too: a mention anywhere else in the file must not make
         # the engine look already-patched.
         "# note: stop_grace_period is managed by the installer\n"
-        + get_compose_content("TG_INSTANCE_ID: test-instance-id")
-        + "\n  postgres:\n    image: postgres:14.1-alpine\n    stop_grace_period: 30s\n"
+        + get_compose_content("TG_INSTANCE_ID: test-instance-id").replace(
+            "    image: postgres:14.1-alpine\n",
+            "    image: postgres:14.1-alpine\n    stop_grace_period: 30s\n",
+        )
     )
 
     tg_upgrade_action.execute(args_mock)
@@ -553,3 +600,47 @@ def test_find_in_block_offsets_are_absolute():
 )
 def test_get_testgen_credentials_from_compose(contents, expected):
     assert get_testgen_credentials_from_compose(contents) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "contents, expected",
+    (
+        (
+            "services:\n  postgres:\n    environment:\n      - POSTGRES_USER=admin\n      - POSTGRES_PASSWORD=secret\n",
+            ("admin", "secret"),
+        ),
+        (
+            "services:\n  postgres:\n    environment:\n"
+            "      - POSTGRES_USER=admin   \n      - POSTGRES_PASSWORD=secret  \n",
+            ("admin", "secret"),
+        ),
+        (
+            # A trailing inline comment must not make the whole line fail to match.
+            "services:\n  postgres:\n    environment:\n"
+            "      - POSTGRES_USER=admin  # bootstrapped by the installer\n"
+            "      - POSTGRES_PASSWORD=secret\n",
+            ("admin", "secret"),
+        ),
+        (
+            "services:\n  postgres:\n    environment:\n      - POSTGRES_PASSWORD=secret\n",
+            (None, "secret"),
+        ),
+        (
+            # A hand-added second service with its own POSTGRES_* must not win just because
+            # it comes first in the file — only the postgres: service's own values count.
+            "services:\n  pgadmin:\n    environment:\n"
+            "      - POSTGRES_USER=wrong-account\n      - POSTGRES_PASSWORD=wrong-password\n"
+            "  postgres:\n    environment:\n      - POSTGRES_USER=admin\n      - POSTGRES_PASSWORD=secret\n",
+            ("admin", "secret"),
+        ),
+        (
+            # `environment:` also accepts mapping style, not just list style.
+            "services:\n  postgres:\n    environment:\n      POSTGRES_USER: admin\n      POSTGRES_PASSWORD: secret\n",
+            ("admin", "secret"),
+        ),
+        ("", (None, None)),
+    ),
+)
+def test_get_postgres_credentials_from_compose(contents, expected):
+    assert get_postgres_credentials_from_compose(contents) == expected

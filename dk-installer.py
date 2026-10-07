@@ -150,8 +150,7 @@ DEFAULT_USER_DATA = {
 }
 
 TESTGEN_METADATA_DB_DEFAULT_USER = "testgen"
-"""Postgres account a fresh Docker install bootstraps for the metadata DB connection —
-independent of the UI login (``DEFAULT_USER_DATA["username"]``)."""
+"""Postgres account a fresh Docker install bootstraps for the metadata DB connection."""
 
 LOG = logging.getLogger()
 
@@ -2116,22 +2115,20 @@ class ObsRunHeartbeatDemoAction(DemoContainerAction):
             CONSOLE.msg("Observability Heartbeat demo stopped.")
 
 
-def find_in_block(contents: str, block: str, key: str) -> typing.Optional[re.Match]:
-    """Find the ``key:`` line inside the compose ``block:`` mapping, or None.
+def find_block_span(contents: str, block: str) -> typing.Optional[tuple[int, int]]:
+    """Return the absolute (start, end) character span of a compose ``block:`` mapping's
+    body, or None if it doesn't exist.
 
     Scans by indentation rather than parsing YAML — enough for the block-style files the
-    installer writes, and it avoids a runtime dependency. Offsets on the returned match
-    are absolute, so callers can splice around it; group 1 is the key's indent.
+    installer writes, and it avoids a runtime dependency.
 
-    Scoping to a block is the point: the same key can appear on several services, and
-    only ``engine`` runs the scheduler. Deliberately says nothing about *which* image a
-    service uses — ``tg install --image`` accepts any registry.
+    Scoping to a block is the point: the same key can appear on several services. Shallowest
+    header wins: a name like ``postgres`` is both a service and a nested key under another
+    service's ``depends_on``, and it's the service the caller means.
     """
     headers = list(re.finditer(rf"^([ \t]*){re.escape(block)}:[ \t]*$", contents, flags=re.M))
     if not headers:
         return None
-    # Shallowest wins: a name like ``postgres`` is both a service and a nested key under
-    # another service's ``depends_on``, and it's the service the caller means.
     header = min(headers, key=lambda match: len(match.group(1)))
     # The block body ends at the first line indented no deeper than the block key itself.
     end = len(contents)
@@ -2139,7 +2136,21 @@ def find_in_block(contents: str, block: str, key: str) -> typing.Optional[re.Mat
         if len(line.group(1)) <= len(header.group(1)):
             end = header.end() + line.start()
             break
-    return re.compile(rf"^([ \t]+){re.escape(key)}:.*$", flags=re.M).search(contents, header.end(), end)
+    return header.end(), end
+
+
+def find_in_block(contents: str, block: str, key: str) -> typing.Optional[re.Match]:
+    """Find the ``key:`` line inside the compose ``block:`` mapping, or None.
+
+    Offsets on the returned match are absolute, so callers can splice around it; group 1 is
+    the key's indent. Deliberately says nothing about *which* image a service uses —
+    ``tg install --image`` accepts any registry.
+    """
+    span = find_block_span(contents, block)
+    if span is None:
+        return None
+    start, end = span
+    return re.compile(rf"^([ \t]+){re.escape(key)}:.*$", flags=re.M).search(contents, start, end)
 
 
 def get_testgen_credentials_from_compose(contents: str) -> tuple[typing.Optional[str], typing.Optional[str]]:
@@ -2156,6 +2167,60 @@ def get_testgen_credentials_from_compose(contents: str) -> tuple[typing.Optional
     return username, password
 
 
+def get_postgres_credentials_from_compose(contents: str) -> tuple[typing.Optional[str], typing.Optional[str]]:
+    """Read the postgres service's actual ``POSTGRES_USER``/``PASSWORD`` out of a compose file.
+
+    The real Postgres account on every installer version — unlike ``TESTGEN_USERNAME``/
+    ``PASSWORD`` (the UI login), which can differ from it. Scoped to the ``postgres:``
+    service, the same way ``find_in_block`` scopes lookups elsewhere, since a hand-edited
+    file could have another service also setting these env vars.
+    """
+    span = find_block_span(contents, "postgres")
+    if span is None:
+        return None, None
+    start, end = span
+    block = contents[start:end]
+    # Compose's `environment:` accepts either list style (`- KEY=value`) or mapping style
+    # (`KEY: value`); a hand-edited file could use either.
+    user_match = re.search(r"^\s*(?:-\s*POSTGRES_USER=|POSTGRES_USER:\s*)(\S+)", block, flags=re.M)
+    password_match = re.search(r"^\s*(?:-\s*POSTGRES_PASSWORD=|POSTGRES_PASSWORD:\s*)(\S+)", block, flags=re.M)
+    return (
+        user_match.group(1) if user_match else None,
+        password_match.group(1) if password_match else None,
+    )
+
+
+def get_missing_metadata_creds_keys(contents: str) -> list[str]:
+    """Which of ``TG_METADATA_DB_USER``/``PASSWORD`` are missing from a compose file's text."""
+    return [key for key in ("TG_METADATA_DB_USER", "TG_METADATA_DB_PASSWORD") if key not in contents]
+
+
+def resolve_metadata_creds_backfill(contents: str, compose_path: pathlib.Path) -> tuple[str, str]:
+    """Resolve the ``POSTGRES_USER``/``PASSWORD`` to backfill missing ``TG_METADATA_DB_USER``/
+    ``PASSWORD`` from. Call only when ``get_missing_metadata_creds_keys`` found something
+    missing — aborts with a clear message if that account can't be determined.
+    """
+    username, password = get_postgres_credentials_from_compose(contents)
+    anchor_exists = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M) is not None
+    if not all([username, password]) or not anchor_exists:
+        CONSOLE.msg(
+            f"Unable to determine POSTGRES_USER/PASSWORD from the existing compose file "
+            f"[{compose_path.absolute()}] to set TG_METADATA_DB_USER/PASSWORD."
+        )
+        raise AbortAction
+    return username, password
+
+
+def insert_metadata_creds(contents: str, missing_keys: list[str], username: str, password: str) -> str:
+    """Splice the given ``TG_METADATA_DB_*`` keys into a compose file's text, after the
+    ``TG_METADATA_DB_HOST`` line (assumed present — callers check via
+    ``resolve_metadata_creds_backfill`` first)."""
+    values = {"TG_METADATA_DB_USER": username, "TG_METADATA_DB_PASSWORD": password}
+    match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
+    var = "".join(f"\n{match.group(1)}{key}: {values[key]}" for key in missing_keys)
+    return contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+
+
 class UpdateComposeFileStep(Step):
     label = "Updating the Docker compose file"
 
@@ -2168,6 +2233,8 @@ class UpdateComposeFileStep(Step):
         self.update_stop_grace = False
         self.update_metadata_creds = False
         self._missing_metadata_creds_keys = []
+        self._metadata_db_username = None
+        self._metadata_db_password = None
         super().__init__()
 
     def pre_execute(self, action, args):
@@ -2240,23 +2307,12 @@ class UpdateComposeFileStep(Step):
             engine_image is not None and find_in_block(contents, "engine", "stop_grace_period") is None
         )
 
-        # TG_METADATA_DB_USER/PASSWORD replaces an implicit app-side fallback to
-        # TESTGEN_USERNAME/PASSWORD, with no fallback of its own. Track each half
-        # independently so a file missing only one of the two still gets repaired,
-        # without re-inserting (and duplicating) the half that's already there.
-        self._missing_metadata_creds_keys = [
-            key for key in ("TG_METADATA_DB_USER", "TG_METADATA_DB_PASSWORD") if key not in contents
-        ]
+        self._missing_metadata_creds_keys = get_missing_metadata_creds_keys(contents)
         self.update_metadata_creds = bool(self._missing_metadata_creds_keys)
         if self.update_metadata_creds:
-            username, password = get_testgen_credentials_from_compose(contents)
-            anchor_exists = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M) is not None
-            if not all([username, password]) or not anchor_exists:
-                CONSOLE.msg(
-                    "Unable to determine TESTGEN_USERNAME/PASSWORD from the existing compose file "
-                    f"[{action.get_compose_file_path(args).absolute()}] to set TG_METADATA_DB_USER/PASSWORD."
-                )
-                raise AbortAction
+            self._metadata_db_username, self._metadata_db_password = resolve_metadata_creds_backfill(
+                contents, action.get_compose_file_path(args)
+            )
 
         if not any(
             (
@@ -2314,11 +2370,9 @@ class UpdateComposeFileStep(Step):
             contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
 
         if self.update_metadata_creds:
-            username, password = get_testgen_credentials_from_compose(contents)
-            values = {"TG_METADATA_DB_USER": username, "TG_METADATA_DB_PASSWORD": password}
-            match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
-            var = "".join(f"\n{match.group(1)}{key}: {values[key]}" for key in self._missing_metadata_creds_keys)
-            contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+            contents = insert_metadata_creds(
+                contents, self._missing_metadata_creds_keys, self._metadata_db_username, self._metadata_db_password
+            )
 
         if self.update_base_url:
             match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
@@ -2350,16 +2404,16 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
         self.password = None
         self.db_username = None
         self.db_password = None
+        self._missing_metadata_creds_keys = []
+        self._contents = None
 
     def pre_execute(self, action, args):
         super().pre_execute(action, args)
-        if action.ctx.get("using_existing"):
-            # An existing file is left untouched by execute() (CreateComposeFileStepBase
-            # raises SkipStep below), so there's nothing to generate for the metadata-DB
-            # account here — only the UI login is needed, for the credentials file.
-            self.username, self.password = get_testgen_credentials_from_compose(
-                action.get_compose_file_path(args).read_text()
-            )
+        compose_path = action.get_compose_file_path(args)
+        using_existing = action.ctx.get("using_existing")
+        if using_existing:
+            self._contents = compose_path.read_text()
+            self.username, self.password = get_testgen_credentials_from_compose(self._contents)
         else:
             self.username = DEFAULT_USER_DATA["username"]
             self.password = generate_password()
@@ -2367,10 +2421,13 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
             self.db_password = generate_password()
 
         if not all([self.username, self.password]):
-            CONSOLE.msg(
-                f"Unable to retrieve username and password from {action.get_compose_file_path(args).absolute()}"
-            )
+            CONSOLE.msg(f"Unable to retrieve username and password from {compose_path.absolute()}")
             raise AbortAction
+
+        if using_existing:
+            self._missing_metadata_creds_keys = get_missing_metadata_creds_keys(self._contents)
+            if self._missing_metadata_creds_keys:
+                self.db_username, self.db_password = resolve_metadata_creds_backfill(self._contents, compose_path)
 
         if args.ssl_cert_file and not args.ssl_key_file or not args.ssl_cert_file and args.ssl_key_file:
             CONSOLE.msg("Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.")
@@ -2379,6 +2436,21 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
         if not TESTGEN_HOST_PATTERN.fullmatch(args.host):
             CONSOLE.msg("--host takes a host name or IP address, without a scheme, port, or path.")
             raise AbortAction
+
+    def execute(self, action, args):
+        # The backfill only ever fills in a key that was fully absent, from values already
+        # present elsewhere in the same file — it can't make the file more wrong, so leaving
+        # it applied even if a later step fails (on_action_fail doesn't revert it) is safe,
+        # and lets a retry skip straight to whatever actually failed.
+        if action.ctx.get("using_existing") and self._missing_metadata_creds_keys:
+            compose_path = action.get_compose_file_path(args)
+            contents = insert_metadata_creds(
+                self._contents, self._missing_metadata_creds_keys, self.db_username, self.db_password
+            )
+            compose_path.write_text(contents)
+            LOG.info("Backfilled TG_METADATA_DB_USER/PASSWORD in existing [%s]", compose_path)
+        else:
+            super().execute(action, args)
 
     def on_action_success(self, action, args):
         super().on_action_success(action, args)
