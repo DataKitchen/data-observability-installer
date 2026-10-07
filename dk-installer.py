@@ -149,6 +149,10 @@ DEFAULT_USER_DATA = {
     "username": "admin",
 }
 
+TESTGEN_METADATA_DB_DEFAULT_USER = "testgen"
+"""Postgres account a fresh Docker install bootstraps for the metadata DB connection —
+independent of the UI login (``DEFAULT_USER_DATA["username"]``)."""
+
 LOG = logging.getLogger()
 
 COMPOSE_VAR_RE = re.compile(r"\$\{(\w+):-([^\}]*)\}")
@@ -2139,11 +2143,7 @@ def find_in_block(contents: str, block: str, key: str) -> typing.Optional[re.Mat
 
 
 def get_testgen_credentials_from_compose(contents: str) -> tuple[typing.Optional[str], typing.Optional[str]]:
-    """Read the bootstrap ``TESTGEN_USERNAME``/``PASSWORD`` out of a compose file's text.
-
-    That pair is the one Postgres account every generated TestGen compose file has always
-    had; ``TG_METADATA_DB_USER/PASSWORD`` is written as a copy of it, never generated fresh.
-    """
+    """Read the bootstrap ``TESTGEN_USERNAME``/``PASSWORD`` out of a compose file's text."""
     username = None
     password = None
     for line in contents.split("\n"):
@@ -2348,16 +2348,23 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
     def __init__(self):
         self.username = None
         self.password = None
+        self.db_username = None
+        self.db_password = None
 
     def pre_execute(self, action, args):
         super().pre_execute(action, args)
         if action.ctx.get("using_existing"):
+            # An existing file is left untouched by execute() (CreateComposeFileStepBase
+            # raises SkipStep below), so there's nothing to generate for the metadata-DB
+            # account here — only the UI login is needed, for the credentials file.
             self.username, self.password = get_testgen_credentials_from_compose(
                 action.get_compose_file_path(args).read_text()
             )
         else:
             self.username = DEFAULT_USER_DATA["username"]
             self.password = generate_password()
+            self.db_username = TESTGEN_METADATA_DB_DEFAULT_USER
+            self.db_password = generate_password()
 
         if not all([self.username, self.password]):
             CONSOLE.msg(
@@ -2421,8 +2428,8 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
               TG_DECRYPT_PASSWORD: {generate_password()}
               TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), "ascii")}
               TG_METADATA_DB_HOST: postgres
-              TG_METADATA_DB_USER: {self.username}
-              TG_METADATA_DB_PASSWORD: {self.password}
+              TG_METADATA_DB_USER: {self.db_username}
+              TG_METADATA_DB_PASSWORD: {self.db_password}
               TG_TARGET_DB_TRUST_SERVER_CERTIFICATE: yes
               TG_EXPORT_TO_OBSERVABILITY_VERIFY_SSL: no
               TG_INSTANCE_ID: {action.analytics.get_instance_id()}
@@ -2462,12 +2469,12 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
                 image: postgres:14.1-alpine
                 restart: always
                 environment:
-                  - POSTGRES_USER={self.username}
-                  - POSTGRES_PASSWORD={self.password}
+                  - POSTGRES_USER={self.db_username}
+                  - POSTGRES_PASSWORD={self.db_password}
                 volumes:
                   - postgres_data:/var/lib/postgresql/data
                 healthcheck:
-                  test: ["CMD-SHELL", "pg_isready -U {self.username}"]
+                  test: ["CMD-SHELL", "pg_isready -U {self.db_username}"]
                   interval: 8s
                   timeout: 5s
                   retries: 3

@@ -171,21 +171,25 @@ def test_tg_compose_sets_engine_stop_grace_period(tg_install_action, start_cmd_m
 
 
 @pytest.mark.integration
-def test_tg_compose_metadata_db_creds_match_bootstrap_user(
+def test_tg_compose_metadata_db_creds_independent_of_ui_login(
     tg_install_action, start_cmd_mock, stdout_mock, compose_path
 ):
-    """TG_METADATA_DB_USER/PASSWORD replaces an implicit app-side fallback to
-    TESTGEN_USERNAME/PASSWORD — no new Postgres role is created, so both pairs must carry
-    the same bootstrap credentials."""
+    """A fresh install bootstraps the metadata-DB Postgres account independently of the UI
+    login — the two must not share a username or password, and Postgres itself must be
+    initialized from the DB pair, not the UI one."""
     tg_install_action.execute()
     contents = compose_path.read_text()
 
-    username_match = re.search(r"TESTGEN_USERNAME: (\S+)", contents)
-    password_match = re.search(r"TESTGEN_PASSWORD: (\S+)", contents)
-    username, password = username_match.group(1), password_match.group(1)
+    ui_username = re.search(r"TESTGEN_USERNAME: (\S+)", contents).group(1)
+    ui_password = re.search(r"TESTGEN_PASSWORD: (\S+)", contents).group(1)
+    db_username = re.search(r"TG_METADATA_DB_USER: (\S+)", contents).group(1)
+    db_password = re.search(r"TG_METADATA_DB_PASSWORD: (\S+)", contents).group(1)
 
-    assert f"TG_METADATA_DB_USER: {username}" in contents
-    assert f"TG_METADATA_DB_PASSWORD: {password}" in contents
+    assert db_username != ui_username
+    assert db_password != ui_password
+    assert f"POSTGRES_USER={db_username}" in contents
+    assert f"POSTGRES_PASSWORD={db_password}" in contents
+    assert f'pg_isready -U {db_username}"' in contents
 
 
 @pytest.mark.integration
