@@ -2168,12 +2168,12 @@ def get_testgen_credentials_from_compose(contents: str) -> tuple[typing.Optional
 
 
 def get_postgres_credentials_from_compose(contents: str) -> tuple[typing.Optional[str], typing.Optional[str]]:
-    """Read the postgres service's actual ``POSTGRES_USER``/``PASSWORD`` out of a compose file.
+    """Read the postgres service's ``POSTGRES_USER``/``PASSWORD`` out of a compose file.
 
-    The real Postgres account on every installer version — unlike ``TESTGEN_USERNAME``/
-    ``PASSWORD`` (the UI login), which can differ from it. Scoped to the ``postgres:``
-    service, the same way ``find_in_block`` scopes lookups elsewhere, since a hand-edited
-    file could have another service also setting these env vars.
+    This is the Postgres account, which can differ from ``TESTGEN_USERNAME``/``PASSWORD``
+    (the UI login). Scoped to the ``postgres:`` service, the same way ``find_in_block``
+    scopes lookups elsewhere, since a hand-edited file could have another service also
+    setting these env vars.
     """
     span = find_block_span(contents, "postgres")
     if span is None:
@@ -2203,10 +2203,7 @@ def resolve_metadata_creds_backfill(contents: str, compose_path: pathlib.Path) -
     username, password = get_postgres_credentials_from_compose(contents)
     anchor_exists = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M) is not None
     if not all([username, password]) or not anchor_exists:
-        CONSOLE.msg(
-            f"Unable to determine POSTGRES_USER/PASSWORD from the existing compose file "
-            f"[{compose_path.absolute()}] to set TG_METADATA_DB_USER/PASSWORD."
-        )
+        CONSOLE.msg(f"Unable to retrieve the database credentials from {compose_path.absolute()}")
         raise AbortAction
     return username, password
 

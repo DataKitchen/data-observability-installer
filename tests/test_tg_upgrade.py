@@ -278,9 +278,7 @@ def test_tg_upgrade_adds_metadata_db_creds(
     version_check_mock,
 ):
     """Existing installs never had TG_METADATA_DB_USER/PASSWORD — the upgrade backfills it
-    from the actual Postgres account (POSTGRES_USER/PASSWORD) already in the file. On an
-    install from before the metadata-DB account could be independent, that equals the UI
-    login."""
+    from the Postgres account (POSTGRES_USER/PASSWORD) already in the file."""
     set_version_check_mock(version_check_mock, "1.0.0")
     compose_path.write_text(get_compose_content("TG_INSTANCE_ID: test-instance-id"))
 
@@ -300,10 +298,9 @@ def test_tg_upgrade_backfills_from_postgres_account_not_ui_login(
     args_mock,
     version_check_mock,
 ):
-    """An install that bootstrapped an independent metadata-DB account has POSTGRES_USER/
-    PASSWORD different from TESTGEN_USERNAME/PASSWORD — if one of TG_METADATA_DB_USER/
-    PASSWORD gets lost, the backfill must recover the actual Postgres account, not the UI
-    login (which can't log in to that volume at all)."""
+    """A compose file can have POSTGRES_USER/PASSWORD different from TESTGEN_USERNAME/
+    PASSWORD — if one of TG_METADATA_DB_USER/PASSWORD gets lost, the backfill must recover
+    the Postgres account, not the UI login (which can't log in to that volume at all)."""
     set_version_check_mock(version_check_mock, "1.0.0")
     compose_path.write_text(
         get_compose_content(
@@ -378,7 +375,7 @@ def test_tg_upgrade_aborts_when_postgres_creds_unavailable(
     with pytest.raises(AbortAction):
         tg_upgrade_action.execute(args_mock)
 
-    console_msg_mock.assert_any_msg_contains("Unable to determine POSTGRES_USER/PASSWORD")
+    console_msg_mock.assert_any_msg_contains("Unable to retrieve the database credentials")
     assert compose_path.read_text() == initial_compose_content
     start_cmd_mock.assert_not_called()
 

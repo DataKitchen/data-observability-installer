@@ -97,8 +97,8 @@ def test_tg_create_compose_file_abort_password(tg_install_action, stdout_mock, c
 @pytest.mark.integration
 def test_tg_install_backfills_metadata_creds_into_existing_file(tg_install_action, stdout_mock, compose_path):
     """A compose file kept across `tg delete --keep-config` can predate TG_METADATA_DB_USER/
-    PASSWORD entirely — `tg install` reusing it must backfill from the actual Postgres
-    account, not just leave the file as-is."""
+    PASSWORD entirely — `tg install` reusing it must backfill from the Postgres account,
+    not just leave the file as-is."""
     compose_path.write_text(
         "x-common-variables: &common-variables\n"
         "  TESTGEN_USERNAME: admin\n"
@@ -164,7 +164,7 @@ def test_tg_install_aborts_when_postgres_creds_unavailable_for_backfill(
         with pytest.raises(AbortAction):
             tg_install_action.execute()
 
-    console_msg_mock.assert_any_msg_contains("Unable to determine POSTGRES_USER/PASSWORD")
+    console_msg_mock.assert_any_msg_contains("Unable to retrieve the database credentials")
     assert compose_path.read_text() == initial_content
 
 
