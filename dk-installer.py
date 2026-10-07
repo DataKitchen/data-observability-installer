@@ -2211,14 +2211,20 @@ def resolve_metadata_creds_backfill(contents: str, compose_path: pathlib.Path) -
     return username, password
 
 
+def insert_after_metadata_db_host(contents: str, *lines: str) -> str:
+    """Splice one or more ``KEY: value`` lines into a compose file's text, right after the
+    ``TG_METADATA_DB_HOST`` line (assumed present in any file this touches)."""
+    match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
+    var = "".join(f"\n{match.group(1)}{line}" for line in lines)
+    return contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+
+
 def insert_metadata_creds(contents: str, missing_keys: list[str], username: str, password: str) -> str:
-    """Splice the given ``TG_METADATA_DB_*`` keys into a compose file's text, after the
-    ``TG_METADATA_DB_HOST`` line (assumed present — callers check via
+    """Splice the given ``TG_METADATA_DB_*`` keys into a compose file's text (see
+    ``insert_after_metadata_db_host``; callers check presence via
     ``resolve_metadata_creds_backfill`` first)."""
     values = {"TG_METADATA_DB_USER": username, "TG_METADATA_DB_PASSWORD": password}
-    match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
-    var = "".join(f"\n{match.group(1)}{key}: {values[key]}" for key in missing_keys)
-    return contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+    return insert_after_metadata_db_host(contents, *(f"{key}: {values[key]}" for key in missing_keys))
 
 
 class UpdateComposeFileStep(Step):
@@ -2349,25 +2355,19 @@ class UpdateComposeFileStep(Step):
         if self.update_analytics:
             if args.send_analytics_data:
                 if "TG_INSTANCE_ID" not in contents:
-                    match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
-                    var = f"\n{match.group(1)}TG_INSTANCE_ID: {action.analytics.get_instance_id()}"
-                    contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+                    contents = insert_after_metadata_db_host(
+                        contents, f"TG_INSTANCE_ID: {action.analytics.get_instance_id()}"
+                    )
             else:
                 if "TG_ANALYTICS" in contents:
                     contents = re.sub(r"^(\s*TG_ANALYTICS:).*$", r"\1 no", contents, flags=re.M)
                 else:
-                    match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
-                    contents = (
-                        contents[0 : match.end()]
-                        + match.group(1)
-                        + f"\n{match.group(1)}TG_ANALYTICS: no"
-                        + contents[match.end() :]
-                    )
+                    contents = insert_after_metadata_db_host(contents, "TG_ANALYTICS: no")
 
         if self.update_token:
-            match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
-            var = f"\n{match.group(1)}TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}"
-            contents = contents[0 : match.end()] + match.group(1) + var + contents[match.end() :]
+            contents = insert_after_metadata_db_host(
+                contents, f"TG_JWT_HASHING_KEY: {str(base64.b64encode(random.randbytes(32)), 'ascii')}"
+            )
 
         if self.update_metadata_creds:
             contents = insert_metadata_creds(
@@ -2375,9 +2375,7 @@ class UpdateComposeFileStep(Step):
             )
 
         if self.update_base_url:
-            match = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M)
-            var = f"\n{match.group(1)}TG_UI_BASE_URL: {self._base_url}"
-            contents = contents[0 : match.end()] + var + contents[match.end() :]
+            contents = insert_after_metadata_db_host(contents, f"TG_UI_BASE_URL: {self._base_url}")
 
         if self.update_api_port:
             match = re.search(rf"^([ \t]+)- \d+:{TESTGEN_DEFAULT_PORT}\b.*$", contents, flags=re.M)
