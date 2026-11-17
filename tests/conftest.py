@@ -123,6 +123,7 @@ def version_check_mock():
 @pytest.fixture
 def analytics_mock():
     with patch("tests.installer.AnalyticsWrapper") as mock:
+        mock.get_instance_id.return_value = "test-instance-id"
         yield mock
 
 
