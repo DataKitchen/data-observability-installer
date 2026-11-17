@@ -1,10 +1,10 @@
 from functools import partial
 from itertools import count
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from tests.installer import ObsUpgradeAction
+from tests.installer import ObsFetchCurrentVersionStep, ObsUpgradeAction
 
 
 @pytest.fixture
@@ -59,3 +59,15 @@ def test_obs_upgrade(obs_upgrade_action, start_cmd_mock, tmp_data_folder, stdout
         ],
         any_order=True,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("interrupted", (False, True))
+def test_obs_upgrade_not_running_message(args_mock, console_msg_mock, interrupted):
+    """After Ctrl+C, the upgrade must not claim Observability isn't running."""
+    action = MagicMock()
+    action.ctx = {"interrupted": True} if interrupted else {}
+
+    ObsFetchCurrentVersionStep().on_action_fail(action, args_mock)
+
+    assert console_msg_mock.called is not interrupted
