@@ -50,7 +50,6 @@ def test_pip_run_demo_without_export(pip_run_demo_action, start_cmd_mock, args_m
         env=TESTGEN_ENV,
     )
     for invocation in start_cmd_mock.call_args_list:
-        assert "export-observability" not in invocation.args
         assert "datakitchen/data-observability-demo:latest" not in invocation.args
 
 
@@ -69,16 +68,6 @@ def test_pip_run_demo_with_export(pip_run_demo_action, start_cmd_mock, args_mock
                 "demo-api-host",
                 "--observability-api-key",
                 "demo-api-key",
-                raise_on_non_zero=True,
-                env=TESTGEN_ENV,
-            ),
-            call(
-                TESTGEN_PATH,
-                "export-observability",
-                "--project-key",
-                "DEFAULT",
-                "--test-suite-key",
-                "default-suite-1",
                 raise_on_non_zero=True,
                 env=TESTGEN_ENV,
             ),
