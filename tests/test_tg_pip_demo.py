@@ -13,6 +13,8 @@ from tests.installer import (
     InstallMarker,
 )
 
+TESTGEN_ENV = {"TG_INSTANCE_ID": "test-instance-id"}
+
 
 UV_PATH = "/usr/local/bin/uv"
 TESTGEN_PATH = "/Users/test/.local/bin/testgen"
@@ -45,7 +47,7 @@ def test_pip_run_demo_without_export(pip_run_demo_action, start_cmd_mock, args_m
         TESTGEN_PATH,
         "quick-start",
         raise_on_non_zero=True,
-        env=None,
+        env=TESTGEN_ENV,
     )
     for invocation in start_cmd_mock.call_args_list:
         assert "export-observability" not in invocation.args
@@ -68,7 +70,7 @@ def test_pip_run_demo_with_export(pip_run_demo_action, start_cmd_mock, args_mock
                 "--observability-api-key",
                 "demo-api-key",
                 raise_on_non_zero=True,
-                env=None,
+                env=TESTGEN_ENV,
             ),
             call(
                 TESTGEN_PATH,
@@ -78,7 +80,7 @@ def test_pip_run_demo_with_export(pip_run_demo_action, start_cmd_mock, args_mock
                 "--test-suite-key",
                 "default-suite-1",
                 raise_on_non_zero=True,
-                env=None,
+                env=TESTGEN_ENV,
             ),
             call(
                 "docker",
@@ -156,7 +158,7 @@ def test_pip_delete_demo(pip_delete_demo_action, start_cmd_mock):
         "--delete-db",
         "--yes",
         raise_on_non_zero=True,
-        env=None,
+        env=TESTGEN_ENV,
     )
 
 
@@ -170,6 +172,7 @@ def run_demo_action(action_cls, args_mock, tmp_data_folder):
     args_mock.action = "run-demo"
     args_mock.obs_export = False
     action.analytics = MagicMock()
+    action.analytics.get_instance_id.return_value = "test-instance-id"
     action.analytics.additional_properties = {}
     return action
 
@@ -212,6 +215,7 @@ def delete_demo_action(action_cls, args_mock, tmp_data_folder):
     args_mock.prod = "tg"
     args_mock.action = "delete-demo"
     action.analytics = MagicMock()
+    action.analytics.get_instance_id.return_value = "test-instance-id"
     action.analytics.additional_properties = {}
     return action
 
@@ -239,7 +243,7 @@ def test_delete_demo_routes_by_marker(delete_demo_action, args_mock, tmp_data_fo
             "--delete-db",
             "--yes",
             raise_on_non_zero=True,
-            env=None,
+            env=TESTGEN_ENV,
         )
     else:
         # Docker branch invokes via docker compose exec.

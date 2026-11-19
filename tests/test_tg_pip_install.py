@@ -15,6 +15,8 @@ from tests.installer import (
     InstallMarker,
 )
 
+TESTGEN_ENV = {"TG_INSTANCE_ID": "test-instance-id"}
+
 
 @pytest.fixture
 def pip_install_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
@@ -52,6 +54,7 @@ def install_action(action_cls, args_mock, tmp_data_folder):
     # Replace the action_cls-shared analytics mock with an instance-level one
     # whose additional_properties is a real dict so tests can assert on it.
     action.analytics = MagicMock()
+    action.analytics.get_instance_id.return_value = "test-instance-id"
     action.analytics.additional_properties = {}
     return action
 
@@ -116,6 +119,7 @@ def test_tg_pip_install_threads_user_ports_through_standalone_setup(
 
     setup_call = next(c for c in start_cmd_mock.call_args_list if "standalone-setup" in c.args)
     assert setup_call.kwargs["env"] == {
+        "TG_INSTANCE_ID": "test-instance-id",
         "TG_UI_PORT": "9000",
         "TG_API_PORT": "9530",
         "TESTGEN_LOG_FILE_PATH": str(TESTGEN_LOG_FILE_PATH),
@@ -152,7 +156,7 @@ def test_tg_pip_install_auto_runs_demo(pip_install_action, start_cmd_mock):
         "/Users/test/.local/bin/testgen",
         "quick-start",
         raise_on_non_zero=True,
-        env=None,
+        env=TESTGEN_ENV,
     )
 
 
@@ -312,3 +316,18 @@ def test_dispatcher_aborts_on_existing_install(install_action, args_mock, tmp_da
     console_msg_mock.assert_any_msg_contains("tg upgrade")
     console_msg_mock.assert_any_msg_contains("tg delete")
     console_msg_mock.assert_any_msg_contains(existing)
+
+
+@pytest.mark.integration
+def test_tg_pip_install_opt_out_reaches_testgen(pip_install_action, args_mock, start_cmd_mock, tmp_data_folder):
+    """TestGen reads its analytics setting from the environment, else config.env, so an opt-out must reach both."""
+    config_path = Path(tmp_data_folder) / "config.env"
+    config_path.write_text("TG_STANDALONE_MODE=yes\nTG_ANALYTICS=yes\n")
+    args_mock.send_analytics_data = False
+
+    with patch("tests.installer.TESTGEN_CONFIG_ENV_PATH", config_path):
+        pip_install_action.execute()
+
+    setup_call = next(c for c in start_cmd_mock.call_args_list if "standalone-setup" in c.args)
+    assert setup_call.kwargs["env"]["TG_ANALYTICS"] == "no"
+    assert config_path.read_text() == "TG_STANDALONE_MODE=yes\nTG_ANALYTICS=no\n"

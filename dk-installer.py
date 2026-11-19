@@ -142,6 +142,9 @@ MIXPANEL_TOKEN = "4eff51580bc1685b8ffe79ffb22d2704"
 MIXPANEL_URL = "https://api.mixpanel.com"
 MIXPANEL_TIMEOUT = 3
 INSTANCE_ID_FILE = "instance.txt"
+# The Windows .exe build replaces None with the MD5 of the script it bundles. Keep this line's shape:
+# the build step matches it.
+BUNDLED_INSTALLER_VERSION = None
 
 DEFAULT_USER_DATA = {
     "name": "Admin",
@@ -199,7 +202,7 @@ def collect_user_input(fields: list[str]) -> dict[str, str]:
                     res[field] = value
     except KeyboardInterrupt:
         print("")  # Moving the cursor back to the start
-        raise AbortAction
+        raise AbortAction(reason=AbortReason.INTERRUPTED)
     finally:
         CONSOLE.space()
     return res
@@ -251,6 +254,8 @@ def remove_path(path: pathlib.Path, label: typing.Optional[str] = None) -> bool:
 
 @functools.cache
 def get_installer_version():
+    if BUNDLED_INSTALLER_VERSION:
+        return BUNDLED_INSTALLER_VERSION
     try:
         return hashlib.md5(pathlib.Path(__file__).read_bytes()).hexdigest()
     except Exception:
@@ -540,24 +545,92 @@ class CommandFailed(Exception):
         idx: typing.Union[int, None] = None,
         cmd: typing.Union[str, None] = None,
         ret_code: typing.Union[int, None] = None,
+        name: typing.Union[str, None] = None,
     ):
         if any((idx, cmd, ret_code)) and not all((idx, cmd)):
             raise ValueError(f"{self.__class__.__name__} requires 'idx' and 'cmd' to be set unless all args are None.")
         self.idx = idx
         self.cmd = cmd
         self.ret_code = ret_code
+        self.name = name
+
+
+def get_command_name(cmd: typing.Sequence) -> str:
+    """Name a command by its program and leading subcommands, e.g. ``testgen standalone-setup``.
+
+    Leaves out the program's directory and everything from the first option on, so no path, user
+    name or secret is included.
+    """
+    program = re.split(r"[\\/]", str(cmd[0]))[-1] if cmd else ""
+    words = [re.sub(r"\.exe$", "", program, flags=re.I)]
+    for part in cmd[1:4]:
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", str(part)):
+            break
+        words.append(str(part))
+    return " ".join(words)
 
 
 class InstallerError(Exception):
     """Should be raised when the root cause could not be addressed and the process is unable to continue."""
 
 
+class AbortReason:
+    """Codes that say why an action was aborted, sent with the ``aborted`` analytics event."""
+
+    APP_NOT_RUNNING = "app_not_running"
+    CONFIG_UNREADABLE = "config_unreadable"
+    DELETE_FAILED = "delete_failed"
+    DEMO_CONFIG_MISSING = "demo_config_missing"
+    EXISTING_INSTALL = "existing_install"
+    INSTALL_INCOMPLETE = "install_incomplete"
+    INTERRUPTED = "interrupted"
+    INVALID_ARGUMENTS = "invalid_arguments"
+    MISSING_REQUIREMENTS = "missing_requirements"
+    NO_INSTALL = "no_install"
+    NOTHING_TO_UPDATE = "nothing_to_update"
+    POSTGRES_UNUSABLE = "postgres_unusable"
+    UNSUPPORTED_PLATFORM = "unsupported_platform"
+    VERSION_UNREADABLE = "version_unreadable"
+
+
 class AbortAction(InstallerError):
     """Should be raised when the root cause has been addressed but the process is unable to continue."""
+
+    def __init__(self, *args, reason: typing.Optional[str] = None):
+        super().__init__(*args)
+        self.reason = reason
 
 
 class SkipStep(Exception):
     """Should be raised when a given Step does not need to be executed."""
+
+
+def running_a_test() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
+def exception_chain(error: BaseException) -> typing.Iterator[BaseException]:
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        yield error
+        error = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+
+
+def describe_error(error: BaseException) -> dict:
+    """Describe an action's error for analytics with codes and class names, never message text,
+    which can hold paths, user names and secrets.
+    """
+    chain = list(exception_chain(error))
+    description = {"error_types": [type(link).__name__ for link in chain]}
+    reason = next((link.reason for link in chain if isinstance(link, AbortAction) and link.reason), None)
+    if reason:
+        description["abort_reason"] = reason
+    command_failure = next((link for link in chain if isinstance(link, CommandFailed) and link.name), None)
+    if command_failure:
+        description["failed_cmd"] = command_failure.name
+        description["cmd_exit_code"] = command_failure.ret_code
+    return description
 
 
 class AnalyticsWrapper:
@@ -586,42 +659,57 @@ class AnalyticsWrapper:
 
     def __enter__(self):
         self._start = time.time()
+        self._sent = False
         self.additional_properties = {}
         self.action.analytics = self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is None:
+        if not self._sent:
+            self._send_outcome(exc_val)
+        return False
+
+    def send_success(self):
+        """Send the action's success event now instead of when the action ends."""
+        if not self._sent:
+            self._send_outcome(None)
+
+    def _is_installer_event(self) -> bool:
+        return (
+            isinstance(self.args.prod, str)
+            and self.args.prod == getattr(self.action, "registered_prod", None)
+            and isinstance(self.action.args_cmd, str)
+        )
+
+    def _send_outcome(self, error: typing.Optional[BaseException]):
+        self._sent = True
+        if not self.args.send_analytics_data or running_a_test() or not self._is_installer_event():
+            return
+
+        if error is None:
             event_name = f"{self.args.prod}-{self.action.args_cmd}"
-        elif exc_type is AbortAction:
+        elif isinstance(error, AbortAction):
             event_name = "aborted"
         else:
             event_name = "failed"
 
-        if self.args.send_analytics_data:
-            properties = {
-                "prod": self.args.prod,
-                "action": self.action.args_cmd,
-                "elapsed": time.time() - self._start,
-                "os_version": platform.release(),
-                "os_arch": platform.machine(),
-                "$os": platform.system(),
-                "python_info": f"{platform.python_implementation()} {platform.python_version()}",
-                "installer_version": get_installer_version(),
-                "distinct_id": self.get_distinct_id(),
-                "instance_id": self.get_instance_id(),
-                **self.additional_properties,
-            }
+        properties = {
+            "prod": self.args.prod,
+            "action": self.action.args_cmd,
+            "elapsed": time.time() - self._start,
+            "os_version": platform.release(),
+            "os_arch": platform.machine(),
+            "$os": platform.system(),
+            "python_info": f"{platform.python_implementation()} {platform.python_version()}",
+            "installer_version": get_installer_version(),
+            "is_exe": bool(getattr(sys, "frozen", False)),
+            "distinct_id": self.get_distinct_id(),
+            "instance_id": self.get_instance_id(),
+            **self.additional_properties,
+        }
+        if error is not None:
+            properties.update(describe_error(error))
 
-            error_chain = []
-            while exc_val is not None:
-                error_chain.append(f"{exc_type.__name__}: {exc_val}")
-                exc_val = exc_val.__cause__
-            if error_chain:
-                properties["error"] = " caused by ".join(error_chain)
-
-            self.send_mp_event(event_name, properties)
-
-        return False
+        self.send_mp_event(event_name, properties)
 
     def get_ssl_context(self):
         ssl_context = ssl.create_default_context()
@@ -664,6 +752,7 @@ class Action:
     args_cmd: str
     args_parser_parents: list = []
     requirements: list[Requirement] = []
+    registered_prod: typing.Optional[str] = None
 
     @contextlib.contextmanager
     def init_session_folder(self, prefix):
@@ -795,7 +884,7 @@ class Action:
         missing_reqs = [req.key for req in self.get_requirements(args) if not req.check_availability(self, args)]
         if missing_reqs:
             self.analytics.additional_properties["missing_requirements"] = missing_reqs
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.MISSING_REQUIREMENTS)
 
     # Names of instance attributes that hold per-invocation state. Reset
     # before each run so the same Action instance can be re-invoked cleanly
@@ -849,7 +938,7 @@ class Action:
                 # Reset the cursor to column 0 — the terminal echoed `^C` mid-line.
                 print("")
                 CONSOLE.msg("Processing interrupted. This may result in an inconsistent application state.")
-                raise AbortAction from e
+                raise AbortAction(reason=AbortReason.INTERRUPTED) from e
 
     def get_parser(self, sub_parsers):
         parser = sub_parsers.add_parser(self.args_cmd, parents=self.args_parser_parents)
@@ -947,7 +1036,7 @@ class Action:
             )
         except FileNotFoundError as e:
             LOG.error("Command [%04d] failed to find the executable", self._cmd_idx)
-            raise CommandFailed(self._cmd_idx, log_str, None) from e
+            raise CommandFailed(self._cmd_idx, log_str, None, get_command_name(cmd)) from e
 
         slug_cmd = re.sub(r"[^a-zA-Z]+", "-", log_str)[:100].strip("-")
 
@@ -970,7 +1059,7 @@ class Action:
         # We capture and raise CommandFailed to allow the client code to raise an empty CommandFailed exception
         # but still get a contextualized exception at the end
         except CommandFailed as e:
-            raise CommandFailed(self._cmd_idx, log_str, proc.returncode) from e.__cause__
+            raise CommandFailed(self._cmd_idx, log_str, proc.returncode, get_command_name(cmd)) from e.__cause__
         finally:
             elapsed = time.time() - started
             LOG.info(
@@ -1025,27 +1114,38 @@ class MultiStepAction(Action):
     def execute(self, args):
         CONSOLE.title(self.title)
         action_steps = [step_class() for step_class in self.steps]
+        analytics = self.analytics.additional_properties
         for step in action_steps:
             try:
                 LOG.debug("Running step [%s] pre-execute", step)
                 step.pre_execute(self, args)
             except AbortAction as e:
                 LOG.info("Step [%s] pre-execute caused the action to abort", step)
+                analytics["failed_step"] = step.__class__.__name__
                 raise AbortAction(f"Step '{step.__class__.__name__}' pre-execute aborted") from e
             except InstallerError as e:
                 LOG.info("Step [%s] pre-execute failed", step)
+                analytics["failed_step"] = step.__class__.__name__
                 raise e.__class__(f"Step '{step.__class__.__name__}' pre-execute failed") from e
             except Exception as e:
                 LOG.exception("Step [%s] pre-execute had an unexpected error", step)
+                analytics["failed_step"] = step.__class__.__name__
                 raise InstallerError(f"Step '{step.__class__.__name__}' had an unexpected error") from e
+            except KeyboardInterrupt:
+                analytics["failed_step"] = step.__class__.__name__
+                raise
 
         self._print_intro_text(args)
         CONSOLE.space()
         action_fail_exception = None
         action_fail_step = None
+        step_durations = analytics["step_durations"] = {}
+        skipped_steps = analytics["skipped_steps"] = []
+        failed_optional_steps = analytics["failed_optional_steps"] = []
         for step in action_steps:
             with CONSOLE.start_partial() as partial:
                 partial(f"{step.label}... ")
+                started = time.time()
                 try:
                     if action_fail_exception:
                         raise SkipStep
@@ -1053,6 +1153,7 @@ class MultiStepAction(Action):
                     step.execute(self, args)
                 except SkipStep:
                     partial("SKIPPED")
+                    skipped_steps.append(step.__class__.__name__)
                     continue
                 except Exception as e:
                     partial("FAILED")
@@ -1061,10 +1162,18 @@ class MultiStepAction(Action):
                     if step.required:
                         action_fail_exception = e
                         action_fail_step = step
+                        analytics["failed_step"] = step.__class__.__name__
                     else:
                         LOG.warning("Non-required step [%s] failed with: %s", step, e)
+                        failed_optional_steps.append(step.__class__.__name__)
+                except KeyboardInterrupt:
+                    analytics["failed_step"] = step.__class__.__name__
+                    raise
                 else:
                     partial("OK")
+                finally:
+                    if step.__class__.__name__ not in skipped_steps:
+                        step_durations[step.__class__.__name__] = round(time.time() - started, 1)
 
         if action_fail_exception:
             CONSOLE.title(f"{self.label} FAILED")
@@ -1133,6 +1242,7 @@ class Installer:
         prod_sub_parsers = prod_parser.add_subparsers(required=True, title="action")
 
         for action in actions:
+            action.registered_prod = prefix
             action.get_parser(prod_sub_parsers)
 
 
@@ -1253,7 +1363,7 @@ def get_uv_asset(prod: str) -> tuple[str, str]:
             "Install uv manually (https://docs.astral.sh/uv/getting-started/installation/) and re-run, "
             f"or {command_hint(prod, 'install --docker', 'Install TestGen')} to use Docker."
         )
-        raise AbortAction
+        raise AbortAction(reason=AbortReason.UNSUPPORTED_PLATFORM)
 
 
 def resolve_uv_path(data_folder: pathlib.Path) -> typing.Optional[str]:
@@ -1429,7 +1539,7 @@ class ComposeActionMixin:
             )
         except CommandFailed:
             CONSOLE.msg("Could NOT delete the Docker resources")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.DELETE_FAILED)
         else:
             if not args.keep_config:
                 remove_path(self.get_compose_file_path(args))
@@ -1455,7 +1565,7 @@ class ComposeActionMixin:
                 )
             except CommandFailed:
                 CONSOLE.msg("Could NOT delete docker volumes. Please delete them manually")
-                raise AbortAction
+                raise AbortAction(reason=AbortReason.DELETE_FAILED)
             else:
                 CONSOLE.msg("Docker volumes deleted")
 
@@ -1507,7 +1617,7 @@ class ComposeVerifyExistingInstallStep(Step):
                 status["Volumes"] = ", ".join([v.get("Name", "N/A") for v in volumes])
             for k, v in status.items():
                 CONSOLE.msg(f"{k:>15}: {v}")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.EXISTING_INSTALL)
 
 
 class ComposePullImagesStep(Step):
@@ -1712,7 +1822,7 @@ class ObsFetchCurrentVersionStep(ComposeStartStep):
         try:
             action.ctx["before_upgrade_version"] = get_observability_version(action, args)
         except CommandFailed:
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.VERSION_UNREADABLE)
         else:
             action.ctx["obs_running"] = True
 
@@ -1810,7 +1920,7 @@ class ObsCreateComposeFileStep(CreateComposeFileStepBase):
         super().pre_execute(action, args)
         if bool(args.ssl_cert_file) != bool(args.ssl_key_file):
             CONSOLE.msg("Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.INVALID_ARGUMENTS)
 
     def get_compose_file_contents(self, action, args):
         action.analytics.additional_properties["used_custom_image"] = any(
@@ -2204,7 +2314,7 @@ def resolve_metadata_creds_backfill(contents: str, compose_path: pathlib.Path) -
     anchor_exists = re.search(r"^([ \t]+)TG_METADATA_DB_HOST:.*$", contents, flags=re.M) is not None
     if not all([username, password]) or not anchor_exists:
         CONSOLE.msg(f"Unable to retrieve the database credentials from {compose_path.absolute()}")
-        raise AbortAction
+        raise AbortAction(reason=AbortReason.CONFIG_UNREADABLE)
     return username, password
 
 
@@ -2329,7 +2439,7 @@ class UpdateComposeFileStep(Step):
             )
         ):
             CONSOLE.msg("No changes will be applied.")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.NOTHING_TO_UPDATE)
 
     def execute(self, action, args):
         if not any(
@@ -2417,7 +2527,7 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
 
         if not all([self.username, self.password]):
             CONSOLE.msg(f"Unable to retrieve username and password from {compose_path.absolute()}")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.CONFIG_UNREADABLE)
 
         if using_existing:
             self._missing_metadata_creds_keys = get_missing_metadata_creds_keys(self._contents)
@@ -2426,11 +2536,11 @@ class TestGenCreateDockerComposeFileStep(CreateComposeFileStepBase):
 
         if args.ssl_cert_file and not args.ssl_key_file or not args.ssl_cert_file and args.ssl_key_file:
             CONSOLE.msg("Both --ssl-cert-file and --ssl-key-file must be provided to use SSL certificates.")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.INVALID_ARGUMENTS)
 
         if not TESTGEN_HOST_PATTERN.fullmatch(args.host):
             CONSOLE.msg("--host takes a host name or IP address, without a scheme, port, or path.")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.INVALID_ARGUMENTS)
 
     def execute(self, action, args):
         # The backfill only ever fills in a key that was fully absent, from values already
@@ -2665,6 +2775,7 @@ def run_testgen_cli(action, args, *cmd_args, **run_cmd_kwargs):
     """
     if action._resolved_mode == INSTALL_MODE_PIP:
         testgen_path = resolve_testgen_path(action, args)
+        run_cmd_kwargs["env"] = {**get_testgen_analytics_env(action, args), **(run_cmd_kwargs.get("env") or {})}
         return action.run_cmd(testgen_path, *cmd_args, **run_cmd_kwargs)
     return action.run_cmd(
         "docker",
@@ -2679,6 +2790,32 @@ def run_testgen_cli(action, args, *cmd_args, **run_cmd_kwargs):
     )
 
 
+def get_testgen_analytics_env(action, args) -> dict[str, str]:
+    """Environment for pip-mode ``testgen`` commands: the installer's instance ID, so TestGen's events
+    can be matched to the install, and ``TG_ANALYTICS=no`` when the user opted out.
+
+    Never sets ``TG_ANALYTICS=yes``: the environment overrides ``config.env``, so that would undo an
+    earlier opt-out.
+    """
+    env = {"TG_INSTANCE_ID": str(action.analytics.get_instance_id())}
+    if not args.send_analytics_data:
+        env["TG_ANALYTICS"] = "no"
+    return env
+
+
+def disable_testgen_analytics_in_config() -> None:
+    """Set ``TG_ANALYTICS=no`` in TestGen's ``config.env``, which TestGen reads when the variable is not
+    in the environment.
+    """
+    if not TESTGEN_CONFIG_ENV_PATH.exists():
+        return
+    contents = TESTGEN_CONFIG_ENV_PATH.read_text()
+    contents, count = re.subn(r"^TG_ANALYTICS=.*$", "TG_ANALYTICS=no", contents, flags=re.M)
+    if not count:
+        contents = contents.rstrip("\n") + "\nTG_ANALYTICS=no\n"
+    TESTGEN_CONFIG_ENV_PATH.write_text(contents)
+
+
 def resolve_testgen_path(action, args) -> str:
     """Return the absolute path to the ``testgen`` script that ``uv tool install``
     placed in uv's bin dir. Calling this script directly (instead of via
@@ -2690,7 +2827,7 @@ def resolve_testgen_path(action, args) -> str:
     uv_path = ctx.get("uv_path") or resolve_uv_path(action.data_folder)
     if uv_path is None:
         CONSOLE.msg(f"uv not found. To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
-        raise AbortAction
+        raise AbortAction(reason=AbortReason.INSTALL_INCOMPLETE)
     bin_dir = action.run_cmd(uv_path, "tool", "dir", "--bin", capture_text=True)
     if not bin_dir:
         raise InstallerError("Could not determine uv tool bin directory.")
@@ -2702,7 +2839,7 @@ def resolve_testgen_path(action, args) -> str:
             f"Try {command_hint(args.prod, 'delete', 'Uninstall TestGen')}, "
             f"then {command_hint(args.prod, 'install', 'Install TestGen')}."
         )
-        raise AbortAction
+        raise AbortAction(reason=AbortReason.INSTALL_INCOMPLETE)
     return str(testgen_path)
 
 
@@ -2962,6 +3099,7 @@ def start_testgen_app(action, args) -> None:
     try:
         proc = subprocess.Popen(
             [testgen_path, "run-app"],
+            env={**os.environ, **get_testgen_analytics_env(action, args)},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
@@ -2990,6 +3128,7 @@ def start_testgen_app(action, args) -> None:
         CONSOLE.msg("Press Ctrl+C to stop the app.")
         CONSOLE.msg(f"To start it again later, {command_hint(args.prod, 'start', 'Start TestGen')}.")
         CONSOLE.space()
+        action.analytics.send_success()
 
         try:
             proc.wait()
@@ -3030,14 +3169,15 @@ class UvToolUpgradeStep(Step):
 
     def execute(self, action, args):
         uv_path = action.ctx["uv_path"]
-        # ``--no-cache`` (top-level option) bypasses uv's cached PyPI index for
-        # this one invocation so a release that was just published is picked up
-        # immediately instead of being served from a stale cache.
+        # ``--no-cache`` bypasses uv's cached PyPI index for this one invocation so a
+        # release that was just published is picked up immediately instead of being
+        # served from a stale cache. It follows the subcommand so analytics name the
+        # command ``uv tool upgrade`` (``get_command_name`` stops at the first option).
         action.run_cmd(
             uv_path,
-            "--no-cache",
             "tool",
             "upgrade",
+            "--no-cache",
             TESTGEN_PIP_PACKAGE,
         )
 
@@ -3113,7 +3253,7 @@ class TestgenVerifyEmbeddedPostgresStep(Step):
             # The exit code is the diagnosis; keep it for the session zip, not the console.
             LOG.warning("Embedded postgres [%s] failed to run: exit %s", postgres_path, e.ret_code)
             self.unusable = True
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.POSTGRES_UNUSABLE)
 
     def on_action_fail(self, action, args):
         # Not from execute: steps run inside a partial console line, so anything printed
@@ -3172,6 +3312,8 @@ class TestgenStandaloneSetupStep(Step):
             env=env,
             redact=(self.password,),
         )
+        if not args.send_analytics_data:
+            disable_testgen_analytics_in_config()
 
     def on_action_success(self, action, args):
         cred_file_path = action.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
@@ -3343,7 +3485,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
             CONSOLE.msg(f"To update it, {command_hint(args.prod, 'upgrade', 'Upgrade TestGen')}.")
             CONSOLE.msg(f"To remove it and start over, {command_hint(args.prod, 'delete', 'Uninstall TestGen')}.")
             CONSOLE.space()
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.EXISTING_INSTALL)
 
         if args.install_mode in (INSTALL_MODE_PIP, INSTALL_MODE_DOCKER):
             mode = args.install_mode
@@ -3397,7 +3539,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
                 choice = input(prompt).strip().lower()
             except (KeyboardInterrupt, EOFError):
                 print("")
-                raise AbortAction
+                raise AbortAction(reason=AbortReason.INTERRUPTED)
             if choice == "":
                 choice = valid_default
             if docker_ready and choice in ("d", "docker"):
@@ -3424,6 +3566,8 @@ class TestgenStandaloneUpgradeStep(Step):
     label = "Upgrading the application database"
 
     def execute(self, action, args):
+        if not args.send_analytics_data:
+            disable_testgen_analytics_in_config()
         run_testgen_cli(action, args, "upgrade-system-version")
 
 
@@ -3502,7 +3646,7 @@ class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
             CONSOLE.msg(f"No TestGen installation found in {self.data_folder}.")
             CONSOLE.msg(f"To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
             CONSOLE.space()
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.NO_INSTALL)
         self._resolved_mode = mode
         self.steps = self.pip_steps if mode == INSTALL_MODE_PIP else self.docker_steps
         self.analytics.additional_properties["install_mode"] = mode
@@ -3541,7 +3685,7 @@ class TestgenStartAction(Action, ComposeActionMixin):
             CONSOLE.msg(f"No TestGen installation found in {self.data_folder}.")
             CONSOLE.msg(f"To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
             CONSOLE.space()
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.NO_INSTALL)
         self._resolved_mode = mode
         self.analytics.additional_properties["install_mode"] = mode
 
@@ -3767,7 +3911,7 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
             CONSOLE.msg(f"No TestGen installation found in {self.data_folder}.")
             CONSOLE.msg(f"To install TestGen, {command_hint(args.prod, 'install', 'Install TestGen')}.")
             CONSOLE.space()
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.NO_INSTALL)
         self._resolved_mode = mode
         self.analytics.additional_properties["install_mode"] = mode
 
@@ -3778,13 +3922,13 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
 
         if args.obs_export and not (self.data_folder / DEMO_CONFIG_FILE).exists():
             CONSOLE.msg("Observability demo configuration missing.")
-            raise AbortAction
+            raise AbortAction(reason=AbortReason.DEMO_CONFIG_MISSING)
 
         if self._resolved_mode == INSTALL_MODE_DOCKER:
             tg_status = self.get_status(args)
             if not tg_status or not re.match(".*running.*", tg_status["Status"], re.I):
                 CONSOLE.msg("Running the TestGen demo requires the application to be running.")
-                raise AbortAction
+                raise AbortAction(reason=AbortReason.APP_NOT_RUNNING)
 
         CONSOLE.msg("This process may take up to 3 minutes depending on your system resources and network speed.")
         CONSOLE.space()
@@ -3861,7 +4005,7 @@ class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
             tg_status = self.get_status(args)
             if not tg_status:
                 CONSOLE.msg("TestGen must be running for its demo data to be cleaned.")
-                raise AbortAction
+                raise AbortAction(reason=AbortReason.APP_NOT_RUNNING)
 
         run_testgen_cli(self, args, "setup-system-db", "--delete-db", "--yes")
 

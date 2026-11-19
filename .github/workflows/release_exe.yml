@@ -40,6 +40,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install .[dev,test]
 
+      # Hashes the committed file, not the checkout, so the .exe reports the same version as the
+      # script downloaded from the same commit even when the checkout converted line endings.
+      - name: Stamp the installer version
+        run: |
+          version=$(git show HEAD:dk-installer.py | md5sum | cut -d' ' -f1)
+          sed -i "s/^BUNDLED_INSTALLER_VERSION = None/BUNDLED_INSTALLER_VERSION = \"${version}\"/" dk-installer.py
+          grep -q "^BUNDLED_INSTALLER_VERSION = \"${version}\"" dk-installer.py
+
       - name: Build the executable
         run: pyinstaller --onefile --exclude demo dk-installer.py
 

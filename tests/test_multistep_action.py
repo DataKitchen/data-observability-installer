@@ -1,9 +1,16 @@
 from itertools import count
-from unittest.mock import Mock, call, ANY
+from unittest.mock import Mock, call, ANY, patch
 
 import pytest
 
 from tests.installer import MultiStepAction, Step, AbortAction, SkipStep, InstallerError, CommandFailed
+
+
+@pytest.fixture(autouse=True)
+def analytics():
+    with patch.object(MultiStepAction, "analytics", create=True) as mock:
+        mock.additional_properties = {}
+        yield mock
 
 
 @pytest.fixture

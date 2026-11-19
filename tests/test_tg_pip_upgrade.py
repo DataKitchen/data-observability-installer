@@ -13,6 +13,8 @@ from tests.installer import (
     InstallMarker,
 )
 
+TESTGEN_ENV = {"TG_INSTANCE_ID": "test-instance-id"}
+
 
 @pytest.fixture
 def pip_upgrade_action(action_cls, args_mock, tmp_data_folder, start_cmd_mock):
@@ -54,9 +56,9 @@ def test_tg_pip_upgrade_happy_path(pip_upgrade_action, start_cmd_mock, stdout_mo
         [
             call(
                 "/usr/local/bin/uv",
-                "--no-cache",
                 "tool",
                 "upgrade",
+                "--no-cache",
                 "dataops-testgen",
                 raise_on_non_zero=True,
                 env=None,
@@ -65,7 +67,7 @@ def test_tg_pip_upgrade_happy_path(pip_upgrade_action, start_cmd_mock, stdout_mo
                 "/Users/test/.local/bin/testgen",
                 "upgrade-system-version",
                 raise_on_non_zero=True,
-                env=None,
+                env=TESTGEN_ENV,
             ),
         ],
         any_order=True,
@@ -126,6 +128,7 @@ def upgrade_action(action_cls, args_mock, tmp_data_folder):
     args_mock.prod = "tg"
     args_mock.action = "upgrade"
     action.analytics = MagicMock()
+    action.analytics.get_instance_id.return_value = "test-instance-id"
     action.analytics.additional_properties = {}
     return action
 
