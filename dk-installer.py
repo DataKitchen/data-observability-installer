@@ -454,7 +454,7 @@ class Console:
         self._last_is_space = False
 
     def print_log(self, log_path: pathlib.Path) -> None:
-        with log_path.open() as log_file:
+        with log_path.open(encoding="utf-8", errors="replace") as log_file:
             print("")
             for line in log_file:
                 line = line.strip()
@@ -593,6 +593,7 @@ class AbortReason:
     INSTALL_INCOMPLETE = "install_incomplete"
     INTERRUPTED = "interrupted"
     INVALID_ARGUMENTS = "invalid_arguments"
+    LEFTOVER_DATA = "leftover_data"
     MISSING_REQUIREMENTS = "missing_requirements"
     NO_INSTALL = "no_install"
     POSTGRES_UNUSABLE = "postgres_unusable"
@@ -847,33 +848,38 @@ class Action:
                 }
             )
 
-    def _get_failed_cmd_log_file_path(
+    def _get_failed_cmd_log_file_paths(
         self, exception: Exception
-    ) -> typing.Union[tuple[CommandFailed, pathlib.Path], tuple[None, None]]:
+    ) -> typing.Union[tuple[CommandFailed, list[pathlib.Path]], tuple[None, list[pathlib.Path]]]:
+        """Find the failed command in the exception chain and its stdout and stderr files, in that order."""
         while exception:
             if isinstance(exception, CommandFailed):
                 break
             else:
                 exception = exception.__cause__
 
+        log_file_paths = []
         if exception:
-            for stream in ("stderr", "stdout"):
+            for stream in ("stdout", "stderr"):
                 try:
                     (log_file_path,) = self.session_folder.glob(f"{exception.idx:04d}-{stream}-*.txt")
                 except ValueError:
                     continue
                 else:
-                    return exception, log_file_path
+                    log_file_paths.append(log_file_path)
+            if log_file_paths:
+                return exception, log_file_paths
 
-        return None, None
+        return None, []
 
     def _msg_unexpected_error(self, exception: Exception) -> None:
-        cmd_exception, log_path = self._get_failed_cmd_log_file_path(exception)
-        if cmd_exception and log_path:
+        cmd_exception, log_paths = self._get_failed_cmd_log_file_paths(exception)
+        if cmd_exception and log_paths:
             CONSOLE.msg(
                 f"Command '{cmd_exception.cmd}' failed with code {cmd_exception.ret_code}. See the output below."
             )
-            CONSOLE.print_log(log_path)
+            for log_path in log_paths:
+                CONSOLE.print_log(log_path)
         else:
             root = exception
             while root.__cause__ is not None:
@@ -3338,9 +3344,8 @@ class TestgenVerifyEmbeddedPostgresStep(Step):
     pixeltable-pgserver build shipped without a library it links against, but the cause does
     not matter here: if the binary will not run, the install cannot succeed.
 
-    Checking before ``standalone-setup`` also keeps a failure from wedging later attempts.
-    A partial setup leaves ``config.env`` behind, and every retry then stops on an
-    interactive "Overwrite?" prompt that the installer has no terminal to answer.
+    Checking before ``standalone-setup`` also keeps a failure from wedging later attempts:
+    a partial setup leaves ``config.env`` behind, and the next install stops until it is removed.
     """
 
     label = "Verifying the embedded database"
@@ -3393,6 +3398,15 @@ class TestgenStandaloneSetupStep(Step):
         self.started = False
 
     def pre_execute(self, action, args):
+        # `standalone-setup` will not overwrite an existing config without a terminal to confirm it.
+        tg_home = get_testgen_home()
+        if (tg_home / "config.env").exists():
+            CONSOLE.msg(f"Found TestGen data from an earlier installation in {simplify_path(tg_home)}.")
+            CONSOLE.msg(
+                f"To delete it and install again, {command_hint(args.prod, 'delete', 'Uninstall TestGen')} first."
+            )
+            CONSOLE.space()
+            raise AbortAction(reason=AbortReason.LEFTOVER_DATA)
         self.username = DEFAULT_USER_DATA["username"]
         self.password = generate_password()
         # A home that predates this install (e.g. kept by `tg delete --keep-data`) must survive a failed install.
@@ -3867,7 +3881,7 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
     """
 
     args_cmd = "delete"
-    _per_invocation_attrs = (*Action._per_invocation_attrs, "_resolved_mode")
+    _per_invocation_attrs = (*Action._per_invocation_attrs, "_resolved_mode", "_found_without_marker")
 
     def get_parser(self, sub_parsers):
         parser = super().get_parser(sub_parsers)
@@ -3902,6 +3916,11 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
         # Unlike install/upgrade, "no install found" is not an abort here —
         # ``tg delete`` is idempotent. execute() handles the None case.
         mode = InstallMarker(self.data_folder, args.prod, args.compose_file_name).read()
+        self._found_without_marker = mode is None and get_testgen_home().exists()
+        if self._found_without_marker:
+            # A failed or interrupted pip install writes no marker but can leave its data behind.
+            LOG.info("No install marker; found pip-mode data in %s", get_testgen_home())
+            mode = INSTALL_MODE_PIP
         self._resolved_mode = mode
         if mode is not None:
             self.analytics.additional_properties["install_mode"] = mode
@@ -3932,6 +3951,10 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
 
     def _delete_pip(self, args):
         CONSOLE.title("Delete TestGen instance")
+        if getattr(self, "_found_without_marker", False):
+            CONSOLE.msg(f"No TestGen installation found in {self.data_folder}.")
+            CONSOLE.msg(f"Removing the leftover TestGen data in {simplify_path(get_testgen_home())}.")
+            CONSOLE.space()
 
         # Stop any running testgen + embedded postgres before touching the
         # installation. On Windows, a live testgen.exe locks its own binary

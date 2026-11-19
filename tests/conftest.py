@@ -51,6 +51,15 @@ def _no_real_orphan_sweep():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def _isolated_testgen_home(tmp_path, monkeypatch):
+    """Point pip-mode TestGen's home at a folder that does not exist yet. Install and delete both look
+    for leftover data there, so the developer's own ``~/.testgen`` would change what they do, and delete
+    would remove it.
+    """
+    monkeypatch.setenv("TG_TESTGEN_HOME", str(tmp_path / "isolated-testgen-home"))
+
+
 @pytest.fixture
 def stdout_mock():
     return Mock(return_value=[])

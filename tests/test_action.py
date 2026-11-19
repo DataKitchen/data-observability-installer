@@ -36,28 +36,29 @@ def test_exec_with_log_raises(exec_exc, expected_exc, print_msg, action, args_mo
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    "exc_levels, glob_side_effect, expected_calls, expected_return",
+    "exc_levels, glob_side_effect, expected_return",
     (
-        (0, ([], [Path("stdout.txt")]), ("stderr", "stdout"), (ANY, Path("stdout.txt"))),
+        (0, ([Path("stdout.txt")], []), (ANY, [Path("stdout.txt")])),
         (
             1,
-            ([Path("stderr.txt"), Path("stderr_2.txt")], [Path("stdout.txt")]),
-            ("stderr", "stdout"),
-            (ANY, Path("stdout.txt")),
+            ([Path("stdout.txt")], [Path("stderr.txt"), Path("stderr_2.txt")]),
+            (ANY, [Path("stdout.txt")]),
         ),
-        (5, ([Path("stderr.txt")], [Path("stdout.txt")]), ("stderr",), (ANY, Path("stderr.txt"))),
-        (3, ([], [Path("stdout.txt"), Path("stdout.txt")]), ("stderr", "stdout"), (None, None)),
-        (1, ([], []), ("stderr", "stdout"), (None, None)),
+        (5, ([Path("stdout.txt")], [Path("stderr.txt")]), (ANY, [Path("stdout.txt"), Path("stderr.txt")])),
+        (2, ([], [Path("stderr.txt")]), (ANY, [Path("stderr.txt")])),
+        (3, ([Path("stdout.txt"), Path("stdout.txt")], []), (None, [])),
+        (1, ([], []), (None, [])),
     ),
     ids=(
         "direct exception, stdout only",
         "one layer deep, two stderr files",
-        "five layers deep, stderr is picked",
+        "five layers deep, both streams in order",
+        "two layers deep, stderr only",
         "three layers deep, two stdout",
         "one layers deep, no files",
     ),
 )
-def test_get_failed_cmd_log(action, exc_levels, glob_side_effect, expected_calls, expected_return):
+def test_get_failed_cmd_log(action, exc_levels, glob_side_effect, expected_return):
     cmd_failed_exc = CommandFailed(42, "cmd 42", 2)
     exc = cmd_failed_exc
     for n in range(exc_levels):
@@ -67,11 +68,11 @@ def test_get_failed_cmd_log(action, exc_levels, glob_side_effect, expected_calls
 
     action.session_folder.glob.side_effect = glob_side_effect
 
-    ret = action._get_failed_cmd_log_file_path(exc)
+    ret = action._get_failed_cmd_log_file_paths(exc)
 
     assert ret == expected_return
     assert ret[0] in (None, cmd_failed_exc)
-    action.session_folder.glob.assert_has_calls([call(f"0042-{stream}-*.txt") for stream in expected_calls])
+    action.session_folder.glob.assert_has_calls([call(f"0042-{stream}-*.txt") for stream in ("stdout", "stderr")])
 
 
 @pytest.mark.unit
