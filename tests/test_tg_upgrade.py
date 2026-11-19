@@ -1,6 +1,6 @@
 import json
 import textwrap
-from unittest.mock import call
+from unittest.mock import call, patch
 
 import pytest
 
@@ -146,10 +146,12 @@ def test_tg_upgrade(
 
     assert f"image: datakitchen/dataops-testgen:v{TESTGEN_MAJOR_VERSION}" in compose_content
     assert "TG_INSTANCE_ID:" in compose_content
+    if not skip_verify:
+        tg_upgrade_action.analytics.additional_properties.__setitem__.assert_any_call("version_updated", True)
 
 
 @pytest.mark.integration
-def test_tg_upgrade_abort(
+def test_tg_upgrade_nothing_to_update(
     tg_upgrade_action,
     compose_path,
     start_cmd_mock,
@@ -168,12 +170,37 @@ def test_tg_upgrade_abort(
     )
     compose_path.write_text(initial_compose_content)
 
-    with pytest.raises(AbortAction):
-        tg_upgrade_action.execute(args_mock)
+    tg_upgrade_action.execute(args_mock)
 
     compose_content = compose_path.read_text()
     assert compose_content == initial_compose_content
     assert start_cmd_mock.call_count == 1
+    tg_upgrade_action.analytics.additional_properties.__setitem__.assert_any_call("version_updated", False)
+
+
+@pytest.mark.integration
+def test_tg_upgrade_nothing_to_update_keeps_the_marker(
+    tg_upgrade_action, compose_path, tg_upgrade_stdout_side_effect, args_mock, version_check_mock
+):
+    args_mock.skip_verify = False
+    set_version_check_mock(version_check_mock, "1.0.0")
+    compose_path.write_text(
+        get_compose_content(
+            "TG_INSTANCE_ID: test-instance-id",
+            "TG_UI_BASE_URL: http://localhost:8501",
+            "TG_METADATA_DB_USER: admin",
+            "TG_METADATA_DB_PASSWORD: WOzviKBQJS50",
+            stop_grace=True,
+        )
+    )
+    marker_path = tg_upgrade_action.data_folder / "dk-tg-install.json"
+    marker_before = marker_path.read_text()
+
+    with patch("tests.installer.InstallMarker.write") as write_mock:
+        tg_upgrade_action.execute(args_mock)
+
+    write_mock.assert_not_called()
+    assert marker_path.read_text() == marker_before
 
 
 @pytest.mark.integration

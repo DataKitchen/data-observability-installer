@@ -75,6 +75,7 @@ def test_tg_pip_upgrade_happy_path(pip_upgrade_action, start_cmd_mock, stdout_mo
 
     console_msg_mock.assert_any_msg_contains("Current version: v5.10.0")
     console_msg_mock.assert_any_msg_contains("already up-to-date (v5.10.0)")
+    pip_upgrade_action.analytics.additional_properties.__setitem__.assert_any_call("version_updated", False)
 
     marker_path = Path(tmp_data_folder) / "dk-tg-install.json"
     data = json.loads(marker_path.read_text())
@@ -96,6 +97,7 @@ def test_tg_pip_upgrade_reports_version_change(pip_upgrade_action, start_cmd_moc
 
     console_msg_mock.assert_any_msg_contains("Current version: v5.10.0")
     console_msg_mock.assert_any_msg_contains("Updated to v5.10.1")
+    pip_upgrade_action.analytics.additional_properties.__setitem__.assert_any_call("version_updated", True)
 
 
 @pytest.mark.integration

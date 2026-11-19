@@ -41,6 +41,11 @@ import typing
 #
 
 REQ_CHECK_TIMEOUT = 30
+DOCKER_ENGINE_WAIT = 120
+DOCKER_ENGINE_POLL_INTERVAL = 3
+# Short, so a CLI that hangs while the engine starts can't stretch the wait far past DOCKER_ENGINE_WAIT.
+DOCKER_ENGINE_POLL_TIMEOUT = 5
+INTERRUPTED_MSG = "Processing interrupted. This may result in an inconsistent application state."
 DEFAULT_DOCKER_REGISTRY = "docker.io"
 DOCKER_NETWORK = "datakitchen-network"
 DOCKER_NETWORK_SUBNET = "192.168.60.0/24"
@@ -513,12 +518,12 @@ class Requirement:
     #: Second way of satisfying the same requirement, tried when ``cmd`` fails.
     alt_cmd: typing.Optional[tuple[typing.Union[str, pathlib.Path], ...]] = None
 
-    def check_availability(self, action, args, quiet=False):
+    def check_availability(self, action, args, quiet=False, timeout=REQ_CHECK_TIMEOUT):
         for cmd in (c for c in (self.cmd, self.alt_cmd) if c is not None):
             try:
                 action.run_cmd_retries(
                     *(seg.format(**args.__dict__) for seg in cmd),
-                    timeout=REQ_CHECK_TIMEOUT,
+                    timeout=timeout,
                     retries=1,
                 )
             except CommandFailed:
@@ -527,10 +532,13 @@ class Requirement:
                 return True
 
         if not quiet:
-            CONSOLE.space()
-            for line in self.fail_msg:
-                CONSOLE.msg(line.format(**args.__dict__))
+            self.print_fail_msg(args)
         return False
+
+    def print_fail_msg(self, args):
+        CONSOLE.space()
+        for line in self.fail_msg:
+            CONSOLE.msg(line.format(**args.__dict__))
 
 
 class CommandFailed(Exception):
@@ -587,7 +595,6 @@ class AbortReason:
     INVALID_ARGUMENTS = "invalid_arguments"
     MISSING_REQUIREMENTS = "missing_requirements"
     NO_INSTALL = "no_install"
-    NOTHING_TO_UPDATE = "nothing_to_update"
     POSTGRES_UNUSABLE = "postgres_unusable"
     UNSUPPORTED_PLATFORM = "unsupported_platform"
     VERSION_UNREADABLE = "version_unreadable"
@@ -599,6 +606,10 @@ class AbortAction(InstallerError):
     def __init__(self, *args, reason: typing.Optional[str] = None):
         super().__init__(*args)
         self.reason = reason
+
+
+class NothingToDo(Exception):
+    """Should be raised from a Step's ``pre_execute`` when the action has nothing to do. The action succeeds."""
 
 
 class SkipStep(Exception):
@@ -881,7 +892,18 @@ class Action:
         return self.requirements
 
     def check_requirements(self, args):
-        missing_reqs = [req.key for req in self.get_requirements(args) if not req.check_availability(self, args)]
+        missing_reqs = []
+        for req in self.get_requirements(args):
+            # Wait for the engine only when Docker is installed, so REQ_DOCKER must come first. The check runs
+            # quietly so its failure message prints once, after the wait.
+            if req is REQ_DOCKER_DAEMON and REQ_DOCKER.key not in missing_reqs:
+                available = req.check_availability(self, args, quiet=True) or wait_for_docker_engine(self, args)
+                if not available:
+                    req.print_fail_msg(args)
+            else:
+                available = req.check_availability(self, args)
+            if not available:
+                missing_reqs.append(req.key)
         if missing_reqs:
             self.analytics.additional_properties["missing_requirements"] = missing_reqs
             raise AbortAction(reason=AbortReason.MISSING_REQUIREMENTS)
@@ -937,7 +959,7 @@ class Action:
             except KeyboardInterrupt as e:
                 # Reset the cursor to column 0 — the terminal echoed `^C` mid-line.
                 print("")
-                CONSOLE.msg("Processing interrupted. This may result in an inconsistent application state.")
+                CONSOLE.msg(INTERRUPTED_MSG)
                 raise AbortAction(reason=AbortReason.INTERRUPTED) from e
 
     def get_parser(self, sub_parsers):
@@ -1074,6 +1096,9 @@ class Action:
 
 class Step:
     required: bool = True
+    #: Whether Ctrl+C during this step counts as the step failing, letting the action carry on. Only for steps
+    #: the user can skip on purpose: an interrupted image pull, for one, has to cancel the whole action.
+    continue_on_interrupt: bool = False
     label = None
 
     def pre_execute(self, action, args):
@@ -1097,6 +1122,8 @@ class MultiStepAction(Action):
     label: str = "Process"
     title: str = ""
     intro_text: list[str] = []
+    #: Whether the steps' ``on_action_fail`` hooks remove everything the action created.
+    undoes_on_fail: bool = False
 
     def __init__(self):
         super().__init__()
@@ -1119,6 +1146,10 @@ class MultiStepAction(Action):
             try:
                 LOG.debug("Running step [%s] pre-execute", step)
                 step.pre_execute(self, args)
+            except NothingToDo:
+                LOG.info("Step [%s] pre-execute found nothing to do", step)
+                self.ctx["nothing_to_do"] = True
+                return
             except AbortAction as e:
                 LOG.info("Step [%s] pre-execute caused the action to abort", step)
                 analytics["failed_step"] = step.__class__.__name__
@@ -1166,20 +1197,34 @@ class MultiStepAction(Action):
                     else:
                         LOG.warning("Non-required step [%s] failed with: %s", step, e)
                         failed_optional_steps.append(step.__class__.__name__)
-                except KeyboardInterrupt:
-                    analytics["failed_step"] = step.__class__.__name__
-                    raise
+                except KeyboardInterrupt as e:
+                    partial(" INTERRUPTED")
+                    if step.required or not step.continue_on_interrupt:
+                        # Failing the action instead of re-raising runs each step's on_action_fail cleanup.
+                        action_fail_exception = AbortAction(reason=AbortReason.INTERRUPTED)
+                        action_fail_exception.__cause__ = e
+                        action_fail_step = step
+                        analytics["failed_step"] = step.__class__.__name__
+                        self.ctx["interrupted"] = True
+                    else:
+                        LOG.warning("Non-required step [%s] was interrupted", step)
+                        failed_optional_steps.append(step.__class__.__name__)
                 else:
                     partial("OK")
                 finally:
                     if step.__class__.__name__ not in skipped_steps:
                         step_durations[step.__class__.__name__] = round(time.time() - started, 1)
 
-        if action_fail_exception:
+        if self.ctx.get("interrupted"):
+            CONSOLE.title(f"{self.label} INTERRUPTED")
+            if self.undoes_on_fail:
+                CONSOLE.msg("Cleaning up...")
+        elif action_fail_exception:
             CONSOLE.title(f"{self.label} FAILED")
         else:
             CONSOLE.title(f"{self.label} SUCCEEDED")
 
+        cleaned_up = self.undoes_on_fail
         for step in reversed(action_steps):
             try:
                 if action_fail_exception is None:
@@ -1190,6 +1235,12 @@ class MultiStepAction(Action):
                     step.on_action_fail(self, args)
             except Exception:
                 LOG.exception("Post-execution of step [%s] failed", step)
+                cleaned_up = False
+
+        if self.ctx.get("interrupted"):
+            CONSOLE.msg(
+                "Processing interrupted. The partial installation was removed." if cleaned_up else INTERRUPTED_MSG
+            )
 
         if action_fail_exception:
             exc_msg = f"Failed step: {action_fail_step.__class__.__name__}"
@@ -1342,12 +1393,46 @@ REQ_TESTGEN_IMAGE = Requirement(
     # signal this requirement exists to give.
     ("docker", "image", "inspect", "{image}"),
     (
-        "The Docker engine could not access TestGen's image.",
-        "Make sure your networking policy allows Docker to pull the {image} image.",
+        "Docker could not reach TestGen's image, {image}, on its registry.",
+        "If your network uses a proxy, configure Docker to use it. To use a registry mirror, pass --image.",
+        "TestGen can also be installed with pip, which does not need Docker.",
     ),
     label="TestGen image reachable",
     alt_cmd=("docker", "manifest", "inspect", "{image}"),
 )
+
+
+def wait_for_docker_engine(action, args) -> bool:
+    """Ask the user to start the Docker engine, then wait up to ``DOCKER_ENGINE_WAIT`` seconds for it.
+
+    Returns whether the engine is running. Returns False without asking when there is no terminal to answer.
+    Raises AbortAction when the user cancels at the prompt.
+    """
+    if sys.stdin is None or not sys.stdin.isatty():
+        return False
+    CONSOLE.space()
+    CONSOLE.msg("Docker is installed, but the Docker engine is not running.")
+    try:
+        input(f"{CONSOLE.MARGIN}Start Docker Desktop or the Docker service, then press Enter to continue: ")
+    except (KeyboardInterrupt, EOFError) as e:
+        print("")
+        action.analytics.additional_properties["docker_engine_wait"] = "interrupted"
+        raise AbortAction(reason=AbortReason.INTERRUPTED) from e
+    CONSOLE.msg("Waiting for the Docker engine to start...")
+    deadline = time.time() + DOCKER_ENGINE_WAIT
+    try:
+        while not REQ_DOCKER_DAEMON.check_availability(action, args, quiet=True, timeout=DOCKER_ENGINE_POLL_TIMEOUT):
+            if time.time() >= deadline:
+                action.analytics.additional_properties["docker_engine_wait"] = "timed_out"
+                return False
+            time.sleep(DOCKER_ENGINE_POLL_INTERVAL)
+    except KeyboardInterrupt as e:
+        print("")
+        action.analytics.additional_properties["docker_engine_wait"] = "interrupted"
+        raise AbortAction(reason=AbortReason.INTERRUPTED) from e
+    action.analytics.additional_properties["docker_engine_wait"] = "started"
+    CONSOLE.msg("The Docker engine is running.")
+    return True
 
 
 def get_uv_asset(prod: str) -> tuple[str, str]:
@@ -1663,6 +1748,8 @@ class ComposePullImagesStep(Step):
             raise SkipStep
 
     def on_action_fail(self, action, args):
+        if not action.get_compose_file_path(args).exists():
+            return
         images = action.run_cmd(
             "docker",
             "compose",
@@ -1691,7 +1778,7 @@ class ComposeStartStep(Step):
         )
 
     def on_action_fail(self, action, args):
-        if action.args_cmd == "install":
+        if action.args_cmd == "install" and action.get_compose_file_path(args).exists():
             action.run_cmd(
                 "docker",
                 "compose",
@@ -1827,7 +1914,7 @@ class ObsFetchCurrentVersionStep(ComposeStartStep):
             action.ctx["obs_running"] = True
 
     def on_action_fail(self, action, args):
-        if not action.ctx.get("obs_running"):
+        if not action.ctx.get("obs_running") and not action.ctx.get("interrupted"):
             CONSOLE.msg("Failed to fetch the current version. Observability has to be running to be upgraded.")
 
 
@@ -1897,6 +1984,7 @@ class ObsDataInitializationStep(Step):
 class ObsGenerateDemoConfigStep(Step):
     label = "Generating the demo configuration"
     required = False
+    continue_on_interrupt = True
 
     def execute(self, action, args):
         try:
@@ -2107,6 +2195,7 @@ class ObsInstallAction(AnalyticsMultiStepAction, ComposeActionMixin):
 
     label = "Installation"
     title = "Install Observability"
+    undoes_on_fail = True
     intro_text = ["This process may take 5~15 minutes depending on your system resources and network speed."]
 
     args_cmd = "install"
@@ -2387,6 +2476,8 @@ class UpdateComposeFileStep(Step):
                     self.update_version = True
                 else:
                     CONSOLE.msg("Application is already up-to-date.")
+                if latest_version not in (None, "unknown"):
+                    action.analytics.additional_properties["version_updated"] = self.update_version
 
         if args.send_analytics_data:
             self.update_analytics = "TG_INSTANCE_ID" not in contents
@@ -2438,8 +2529,7 @@ class UpdateComposeFileStep(Step):
                 self.update_metadata_creds,
             )
         ):
-            CONSOLE.msg("No changes will be applied.")
-            raise AbortAction(reason=AbortReason.NOTHING_TO_UPDATE)
+            raise NothingToDo
 
     def execute(self, action, args):
         if not any(
@@ -2727,7 +2817,11 @@ class TestGenUpgradeDatabaseStep(Step):
 class UvToolInstallStep(Step):
     label = "Installing TestGen"
 
+    def __init__(self):
+        self.started = False
+
     def execute(self, action, args):
+        self.started = True
         uv_path = action.ctx["uv_path"]
         major = int(TESTGEN_MAJOR_VERSION)
         constraint = f"{TESTGEN_PIP_PACKAGE}[standalone]>={major},<{major + 1}"
@@ -2745,6 +2839,16 @@ class UvToolInstallStep(Step):
         action.run_cmd(uv_path, "tool", "update-shell", raise_on_non_zero=False)
         if version := read_installed_testgen_version(action):
             action.analytics.additional_properties["testgen_version"] = version
+
+    def on_action_fail(self, action, args):
+        if not self.started:
+            return
+        # On Windows, a running testgen.exe locks the tool environment against uninstall.
+        stop_standalone_orphans()
+        # Non-zero when the install never got far enough to register the tool; the check below is what counts.
+        action.run_cmd(action.ctx["uv_path"], "tool", "uninstall", TESTGEN_PIP_PACKAGE, raise_on_non_zero=False)
+        if read_installed_testgen_version(action):
+            raise InstallerError("TestGen is still installed as a uv tool")
 
 
 def read_installed_testgen_version(action) -> typing.Optional[str]:
@@ -2994,6 +3098,12 @@ def _windows_sweep_script(spare_pid: int) -> str:
     return _WINDOWS_ORPHAN_SWEEP.replace("MATCH_CLAUSE", clause).replace("PIDS_TO_SPARE", str(spare_pid))
 
 
+def get_testgen_home() -> pathlib.Path:
+    """Where pip-mode TestGen keeps its config, logs and embedded Postgres data."""
+    tg_home_env = os.environ.get("TG_TESTGEN_HOME")
+    return pathlib.Path(tg_home_env) if tg_home_env else pathlib.Path.home() / ".testgen"
+
+
 def stop_standalone_orphans() -> None:
     """Best-effort kill of orphan ``testgen`` + embedded ``postgres`` processes
     left over from a previous dirty exit.
@@ -3013,8 +3123,7 @@ def stop_standalone_orphans() -> None:
     # Outer guard so a transient filesystem/permission glitch in this best-effort
     # cleanup can never crash the install or delete flow.
     try:
-        tg_home_env = os.environ.get("TG_TESTGEN_HOME")
-        tg_home = pathlib.Path(tg_home_env) if tg_home_env else pathlib.Path.home() / ".testgen"
+        tg_home = get_testgen_home()
         pid_file = tg_home / "pgdata" / "postmaster.pid"
         is_windows = platform.system() == "Windows"
 
@@ -3186,6 +3295,7 @@ class UvToolUpgradeStep(Step):
         if new_version is None:
             return
         action.analytics.additional_properties["testgen_version"] = new_version
+        action.analytics.additional_properties["version_updated"] = new_version != self.current_version
         if new_version == self.current_version:
             CONSOLE.msg(f"Application is already up-to-date (v{new_version}).")
         else:
@@ -3279,16 +3389,21 @@ class TestgenStandaloneSetupStep(Step):
     def __init__(self):
         self.username = None
         self.password = None
+        self.home_existed = True
+        self.started = False
 
     def pre_execute(self, action, args):
         self.username = DEFAULT_USER_DATA["username"]
         self.password = generate_password()
+        # A home that predates this install (e.g. kept by `tg delete --keep-data`) must survive a failed install.
+        self.home_existed = get_testgen_home().exists()
         # Reach here only after `_resolve_install_mode` confirmed no existing
         # install marker — so any running testgen/postgres processes are
         # orphans from a previous dirty exit, safe to force-kill.
         stop_standalone_orphans()
 
     def execute(self, action, args):
+        self.started = True
         # standalone-setup persists these env vars to ~/.testgen/config.env so
         # subsequent ``testgen run-app`` invocations pick them up automatically.
         # TESTGEN_LOG_FILE_PATH lets the App Logs dialog in the UI surface logs.
@@ -3328,6 +3443,16 @@ class TestgenStandaloneSetupStep(Step):
         CONSOLE.msg(f"(Credentials also written to {simplify_path(cred_file_path)})")
         CONSOLE.space()
 
+    def on_action_fail(self, action, args):
+        if not self.started or self.home_existed:
+            return
+        # Postgres holds files open in the data directory until it stops.
+        stop_standalone_orphans()
+        tg_home = get_testgen_home()
+        remove_path(tg_home)
+        if tg_home.exists():
+            raise InstallerError("The TestGen data directory could not be removed")
+
 
 class TestgenQuickStartStep(Step):
     """Generate demo data so the user has something to look at right after
@@ -3337,6 +3462,7 @@ class TestgenQuickStartStep(Step):
 
     label = "Generating demo data"
     required = False
+    continue_on_interrupt = True
 
     def execute(self, action, args):
         if not getattr(args, "generate_demo", True):
@@ -3382,6 +3508,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
     args_cmd = "install"
     label = "Installation"
     title = "Install TestGen"
+    undoes_on_fail = True
     _per_invocation_attrs = (*MultiStepAction._per_invocation_attrs, "_resolved_mode", "steps", "intro_text")
 
     def get_parser(self, sub_parsers):
@@ -3482,6 +3609,9 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         if existing:
             CONSOLE.msg(f"Found an existing TestGen {existing} installation in {self.data_folder}.")
             CONSOLE.space()
+            if print_access_info(self.data_folder, args):
+                CONSOLE.space()
+            CONSOLE.msg(f"If it is not running, {command_hint(args.prod, 'start', 'Start TestGen')}.")
             CONSOLE.msg(f"To update it, {command_hint(args.prod, 'upgrade', 'Upgrade TestGen')}.")
             CONSOLE.msg(f"To remove it and start over, {command_hint(args.prod, 'delete', 'Uninstall TestGen')}.")
             CONSOLE.space()
@@ -3502,7 +3632,16 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         # status to the user. If a prereq fails (e.g. Docker engine not running),
         # the user can decide whether to fix it or fall back to pip.
         prereq_results = [(req, req.check_availability(self, args, quiet=True)) for req in self.docker_requirements]
-        docker_ready = all(ok for _, ok in prereq_results)
+        failed_reqs = [req for req, ok in prereq_results if not ok]
+        docker_ready = not failed_reqs
+        # A stopped engine still allows Docker, since check_requirements waits for it. The image check is left out:
+        # it runs through the engine, so it fails whenever the engine is down.
+        engine_stopped = (
+            REQ_DOCKER_DAEMON in failed_reqs
+            and not any(req in failed_reqs for req in (REQ_DOCKER, REQ_DOCKER_COMPOSE))
+            and sys.stdin is not None
+            and sys.stdin.isatty()
+        )
 
         CONSOLE.space()
         CONSOLE.msg("TestGen offers two installation modes:")
@@ -3525,7 +3664,12 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
         )
         CONSOLE.space()
 
-        if docker_ready:
+        docker_allowed = docker_ready or engine_stopped
+        if docker_allowed:
+            if engine_stopped:
+                CONSOLE.msg("The Docker engine is not running. To install with Docker, choose [d], then start")
+                CONSOLE.msg("Docker Desktop or the Docker service yourself when prompted.")
+                CONSOLE.space()
             prompt = f"{CONSOLE.MARGIN}Install with Docker [d] or pip [p]? (default: d): "
             valid_default = "d"
         else:
@@ -3542,7 +3686,7 @@ class TestgenInstallAction(ComposeActionMixin, AnalyticsMultiStepAction):
                 raise AbortAction(reason=AbortReason.INTERRUPTED)
             if choice == "":
                 choice = valid_default
-            if docker_ready and choice in ("d", "docker"):
+            if docker_allowed and choice in ("d", "docker"):
                 return INSTALL_MODE_DOCKER
             if choice in ("p", "pip"):
                 return INSTALL_MODE_PIP
@@ -3654,7 +3798,8 @@ class TestgenUpgradeAction(ComposeActionMixin, AnalyticsMultiStepAction):
 
     def execute(self, args):
         super().execute(args)
-        InstallMarker(self.data_folder, args.prod).write(self._resolved_mode)
+        if not self.ctx.get("nothing_to_do"):
+            InstallMarker(self.data_folder, args.prod).write(self._resolved_mode)
 
 
 class TestgenStartAction(Action, ComposeActionMixin):
@@ -3812,8 +3957,7 @@ class TestgenDeleteAction(Action, ComposeActionMixin):
             CONSOLE.msg("uv not found; skipping 'uv tool uninstall testgen'.")
 
         if not getattr(args, "keep_data", False):
-            tg_home = pathlib.Path(os.environ.get("TG_TESTGEN_HOME", pathlib.Path.home() / ".testgen"))
-            remove_path(tg_home, label="TestGen data directory")
+            remove_path(get_testgen_home(), label="TestGen data directory")
 
         # Don't touch ~/.streamlit — Streamlit is widely used and the user
         # may have other Streamlit projects on this machine. The config dir
@@ -4012,20 +4156,29 @@ class TestgenDeleteDemoAction(DemoContainerAction, ComposeActionMixin):
         CONSOLE.title("Demo data DELETED")
 
 
+def print_access_info(data_folder: pathlib.Path, args) -> bool:
+    """Print the product's URLs and credentials from its credentials file, leaving the password out of the logs.
+
+    Returns False when there is no credentials file to read.
+    """
+    try:
+        info = data_folder.joinpath(CREDENTIALS_FILE.format(args.prod)).read_text()
+    except (OSError, ValueError):
+        return False
+    for line in info.splitlines():
+        CONSOLE.msg(line, skip_logging=line.startswith("Password:"))
+    return True
+
+
 class AccessInstructionsAction(Action):
     args_cmd = "access-info"
 
     def execute(self, args):
-        credendials_path = self.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
-        try:
-            info = credendials_path.read_text()
-        except Exception:
+        if not print_access_info(self.data_folder, args):
+            credentials_path = self.data_folder.joinpath(CREDENTIALS_FILE.format(args.prod))
             CONSOLE.msg(
-                f"No {args.prod_name} access information found in {credendials_path}. Is {args.prod_name} installed?"
+                f"No {args.prod_name} access information found in {credentials_path}. Is {args.prod_name} installed?"
             )
-        else:
-            for line in info.splitlines():
-                CONSOLE.msg(line)
 
 
 #

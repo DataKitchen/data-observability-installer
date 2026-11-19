@@ -7,6 +7,9 @@ import pytest
 
 from tests.installer import (
     AbortAction,
+    InstallerError,
+    TestgenStandaloneSetupStep,
+    UvToolInstallStep,
     INSTALL_MODE_DOCKER,
     INSTALL_MODE_PIP,
     TESTGEN_MAJOR_VERSION,
@@ -331,3 +334,90 @@ def test_tg_pip_install_opt_out_reaches_testgen(pip_install_action, args_mock, s
     setup_call = next(c for c in start_cmd_mock.call_args_list if "standalone-setup" in c.args)
     assert setup_call.kwargs["env"]["TG_ANALYTICS"] == "no"
     assert config_path.read_text() == "TG_STANDALONE_MODE=yes\nTG_ANALYTICS=no\n"
+
+
+@pytest.mark.integration
+def test_auto_mode_offers_docker_when_only_the_engine_is_stopped(install_action, args_mock, console_msg_mock):
+    """A stopped engine is recoverable (the install waits for it), so Docker stays on offer."""
+
+    def engine_stopped(req_self, *_, **__):
+        return req_self.key not in ("DOCKER_ENGINE", "TESTGEN_IMAGE")
+
+    with (
+        patch("tests.installer.Requirement.check_availability", autospec=True, side_effect=engine_stopped),
+        patch("tests.installer.sys.stdin.isatty", return_value=True),
+        patch("builtins.input", return_value="") as input_mock,
+    ):
+        install_action._resolve_install_mode(args_mock)
+
+    assert install_action._resolved_mode == INSTALL_MODE_DOCKER
+    assert "[d]" in input_mock.call_args.args[0]
+    console_msg_mock.assert_any_msg_contains("The Docker engine is not running.")
+
+
+@pytest.mark.integration
+def test_existing_install_prints_access_info(install_action, args_mock, tmp_data_folder, console_msg_mock):
+    InstallMarker(Path(tmp_data_folder), "tg").write(INSTALL_MODE_PIP)
+    Path(tmp_data_folder, "dk-tg-credentials.txt").write_text("User Interface: http://localhost:8501\n")
+
+    with pytest.raises(AbortAction):
+        install_action._resolve_install_mode(args_mock)
+
+    console_msg_mock.assert_any_msg_contains("User Interface: http://localhost:8501")
+    console_msg_mock.assert_any_msg_contains("tg start")
+
+
+@pytest.fixture
+def cleanup_action():
+    action = MagicMock()
+    action.ctx = {"uv_path": "/usr/local/bin/uv"}
+    return action
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("still_installed", (False, True))
+def test_failed_pip_install_uninstalls_the_tool(cleanup_action, args_mock, still_installed):
+    step = UvToolInstallStep()
+    step.started = True
+
+    with (
+        patch("tests.installer.stop_standalone_orphans"),
+        patch("tests.installer.read_installed_testgen_version", return_value="5.0.0" if still_installed else None),
+    ):
+        if still_installed:
+            with pytest.raises(InstallerError):
+                step.on_action_fail(cleanup_action, args_mock)
+        else:
+            step.on_action_fail(cleanup_action, args_mock)
+
+    cleanup_action.run_cmd.assert_called_once_with(
+        "/usr/local/bin/uv", "tool", "uninstall", "dataops-testgen", raise_on_non_zero=False
+    )
+
+
+@pytest.mark.unit
+def test_pip_install_cleanup_skips_steps_that_never_ran(cleanup_action, args_mock):
+    UvToolInstallStep().on_action_fail(cleanup_action, args_mock)
+
+    cleanup_action.run_cmd.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("home_existed", (False, True), ids=("created by the install", "kept from before"))
+def test_failed_pip_install_removes_only_a_new_testgen_home(cleanup_action, args_mock, tmp_path, home_existed):
+    tg_home = tmp_path / "testgen-home"
+    if home_existed:
+        tg_home.mkdir()
+    step = TestgenStandaloneSetupStep()
+
+    with (
+        patch.dict("os.environ", {"TG_TESTGEN_HOME": str(tg_home)}),
+        patch("tests.installer.stop_standalone_orphans"),
+    ):
+        step.pre_execute(cleanup_action, args_mock)
+        step.started = True
+        tg_home.mkdir(exist_ok=True)
+        tg_home.joinpath("config.env").write_text("TG_UI_PORT=8501")
+        step.on_action_fail(cleanup_action, args_mock)
+
+    assert tg_home.exists() is home_existed
