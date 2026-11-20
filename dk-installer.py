@@ -4114,16 +4114,6 @@ class TestgenRunDemoAction(DemoContainerAction, ComposeActionMixin):
             ]
 
         run_testgen_cli(self, args, "quick-start", *export_args)
-        if args.obs_export:
-            run_testgen_cli(
-                self,
-                args,
-                "export-observability",
-                "--project-key",
-                "DEFAULT",
-                "--test-suite-key",
-                "default-suite-1",
-            )
 
         CONSOLE.title("Demo SUCCEEDED")
 
