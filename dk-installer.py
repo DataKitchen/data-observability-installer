@@ -3409,7 +3409,8 @@ class TestgenStandaloneSetupStep(Step):
             raise AbortAction(reason=AbortReason.LEFTOVER_DATA)
         self.username = DEFAULT_USER_DATA["username"]
         self.password = generate_password()
-        # A home that predates this install (e.g. kept by `tg delete --keep-data`) must survive a failed install.
+        # A home that predates this install (one without a config.env, which passed the check above)
+        # must survive a failed install.
         self.home_existed = get_testgen_home().exists()
         # Reach here only after `_resolve_install_mode` confirmed no existing
         # install marker — so any running testgen/postgres processes are

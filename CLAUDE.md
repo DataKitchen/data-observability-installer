@@ -55,7 +55,7 @@ TestGen has two install modes: `docker` (Compose) and `pip` (uv-managed venv wit
 The five `Testgen*Action` classes that span both modes follow a unified pattern:
 - `_per_invocation_attrs` includes `_resolved_mode` (and `steps` / `intro_text` for the `MultiStepAction`-based ones) so menu re-runs start clean.
 - `check_requirements` resolves mode once via `_resolve_install_mode`, then calls `super().check_requirements`.
-- `_resolve_install_mode` reads the marker (or runs auto-detect for `install`), sets `self._resolved_mode`, optionally records `analytics["install_mode"]`. Install/upgrade/start/run-demo abort when no install exists; delete and delete-demo are idempotent (return rather than raise).
+- `_resolve_install_mode` reads the marker (or runs auto-detect for `install`), sets `self._resolved_mode`, optionally records `analytics["install_mode"]`. Install/upgrade/start/run-demo abort when no install exists; delete and delete-demo are idempotent (return rather than raise). Delete treats a TestGen home (`~/.testgen`) without a marker as pip mode and removes it, since a failed or interrupted pip install leaves data behind but writes no marker.
 - `get_requirements` reads `self._resolved_mode` — Docker reqs only when in Docker mode.
 - `execute` branches on `self._resolved_mode`. For `MultiStepAction` subclasses, `self.steps` is also swapped at resolution time using class-level `pip_steps` / `docker_steps`.
 
