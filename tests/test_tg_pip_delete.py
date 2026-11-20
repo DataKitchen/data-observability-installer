@@ -1,3 +1,4 @@
+import os
 import platform
 from functools import partial
 from pathlib import Path
@@ -174,6 +175,36 @@ def test_delete_routes_to_pip_and_removes_marker(delete_action, args_mock, tmp_d
     pip_branch.assert_called_once_with(args_mock)
     assert not (Path(tmp_data_folder) / INSTALL_MARKER_FILE.format("tg")).exists()
     assert delete_action.analytics.additional_properties["install_mode"] == INSTALL_MODE_PIP
+
+
+@pytest.mark.integration
+def test_delete_without_a_marker_removes_leftover_pip_data(delete_action, args_mock, tmp_data_folder):
+    """A failed or interrupted pip install writes no marker but can leave its data behind."""
+    tg_home = Path(os.environ["TG_TESTGEN_HOME"])
+    tg_home.mkdir()
+    (tg_home / "config.env").write_text("TG_STANDALONE_MODE=yes\n")
+
+    delete_action._resolve_install_mode(args_mock)
+    with patch.object(delete_action, "_delete_pip") as pip_branch:
+        delete_action.execute(args_mock)
+
+    pip_branch.assert_called_once_with(args_mock)
+    assert delete_action.analytics.additional_properties["install_mode"] == INSTALL_MODE_PIP
+
+
+@pytest.mark.integration
+def test_delete_without_a_marker_says_what_it_removes(pip_delete_action, args_mock, console_msg_mock):
+    InstallMarker(pip_delete_action.data_folder, "tg").unlink()
+    tg_home = Path(os.environ["TG_TESTGEN_HOME"])
+    tg_home.mkdir()
+    pip_delete_action._resolve_install_mode(args_mock)
+
+    with patch("tests.installer.shutil.which", return_value=None):
+        pip_delete_action.execute()
+
+    console_msg_mock.assert_any_msg_contains("No TestGen installation found in")
+    console_msg_mock.assert_any_msg_contains("Removing the leftover TestGen data in")
+    assert not tg_home.exists()
 
 
 @pytest.mark.integration

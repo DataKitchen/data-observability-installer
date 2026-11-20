@@ -1,4 +1,5 @@
 import json
+import os
 from functools import partial
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -7,6 +8,7 @@ import pytest
 
 from tests.installer import (
     AbortAction,
+    AbortReason,
     InstallerError,
     TestgenStandaloneSetupStep,
     UvToolInstallStep,
@@ -15,6 +17,7 @@ from tests.installer import (
     TESTGEN_MAJOR_VERSION,
     TESTGEN_PYTHON_VERSION,
     TestgenInstallAction,
+    command_hint,
     InstallMarker,
 )
 
@@ -421,3 +424,31 @@ def test_failed_pip_install_removes_only_a_new_testgen_home(cleanup_action, args
         step.on_action_fail(cleanup_action, args_mock)
 
     assert tg_home.exists() is home_existed
+
+
+@pytest.mark.integration
+def test_pip_install_stops_before_installing_over_leftover_data(pip_install_action, start_cmd_mock, console_msg_mock):
+    """`standalone-setup` cannot confirm overwriting an existing config without a terminal, so the install stops
+    before it starts."""
+    tg_home = Path(os.environ["TG_TESTGEN_HOME"])
+    tg_home.mkdir()
+    (tg_home / "config.env").write_text("TG_STANDALONE_MODE=yes\n")
+
+    with pytest.raises(AbortAction) as raised:
+        pip_install_action.execute()
+
+    assert raised.value.__cause__.reason == AbortReason.LEFTOVER_DATA
+    console_msg_mock.assert_any_msg_contains("Found TestGen data from an earlier installation")
+    console_msg_mock.assert_any_msg_contains(command_hint("tg", "delete", "Uninstall TestGen"))
+    start_cmd_mock.assert_not_called()
+    assert (tg_home / "config.env").exists()
+
+
+@pytest.mark.integration
+def test_pip_install_proceeds_over_a_home_without_config(pip_install_action, start_cmd_mock):
+    tg_home = Path(os.environ["TG_TESTGEN_HOME"])
+    (tg_home / "logs").mkdir(parents=True)
+
+    pip_install_action.execute()
+
+    assert any("standalone-setup" in c.args for c in start_cmd_mock.call_args_list)
